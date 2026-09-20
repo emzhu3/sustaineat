@@ -1,16 +1,26 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
 // The backend serves this page as well as the API, so the API lives at the
-// origin the page was loaded from — localhost:5000 in development, the Render
-// URL in production, with nothing to reconfigure between them. A no-build
-// static frontend has no env-var mechanism; same-origin is the mechanism.
-//
-// The exception is VS Code Live Server on :5500, which serves these files but
-// has no API behind it, so those requests are sent to the local backend.
-const BACKEND_URL =
-  window.location.port === "5500"
-    ? "http://localhost:5000"
-    : window.location.origin;
+// origin the page was loaded from — localhost:5000 in development, the deployed
+// URL in production, with nothing to reconfigure between them. A no-build static
+// frontend has no env-var mechanism; same-origin is the mechanism.
+const LOCAL_BACKEND = "http://localhost:5000";
+
+const BACKEND_URL = (function () {
+  // Opened straight off disk: there is no origin to call.
+  if (window.location.protocol === "file:") return LOCAL_BACKEND;
+
+  // VS Code Live Server serves these files but has no API behind it. It
+  // defaults to 5500 and walks upward — 5501, 5502 — whenever that port is
+  // already taken, which a second editor window does routinely. Matching only
+  // the default sent the whole API at the static server and surfaced as
+  // "Could not reach the backend" while the backend was running fine, so match
+  // the range instead. Deliberately not "any non-5000 port": running the
+  // backend itself on PORT=5001 must still resolve to its own origin.
+  if (/^55\d\d$/.test(window.location.port)) return LOCAL_BACKEND;
+
+  return window.location.origin;
+})();
 
 // Personal FoodData Central key (X-Ratelimit-Limit reports 3,600/hour), not the
 // shared DEMO_KEY, which caps at ~30/hour per IP and would 429 mid-demo.
@@ -1330,7 +1340,12 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
             };
           });
         } catch (err) {
-          restaurantNotice = "Could not reach the backend — start it with `npm start` in the server folder, so pickup locations can be checked.";
+          // Name the URL that actually failed. The old wording told you to start
+          // a backend that was already running, whenever the real fault was the
+          // page resolving the wrong origin for it.
+          restaurantNotice =
+            `Could not reach the backend at ${BACKEND_URL} — ${err.message}. ` +
+            "If it is not running, start it with `npm start` in the server folder.";
         }
         // Things you can actually get come first.
         alternatives.sort((a, b) => Number(b.available) - Number(a.available));
