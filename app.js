@@ -693,20 +693,6 @@ function pointsForOrder({ carbon, savedKg, streak, lifetimePoints }) {
   };
 }
 
-// Ordering something that was already low-impact earns its own, smaller award.
-// Deliberately NOT pointsForOrder: there is no swap, so the savings term is
-// meaningless, and the streak and tier multipliers are left out so this can
-// never inflate to swap size. What is left is the app's existing "how low is
-// this food" arithmetic and nothing new — ramen at 0.5 kg pays 113, where
-// swapping into it would pay roughly three times that.
-//
-// Separate function on purpose. pointsForOrder is the swap path's and stays
-// untouched.
-function pointsForLowImpactChoice(carbon) {
-  const footprint = footprintPoints(carbon);
-  return { footprint, total: footprint };
-}
-
 /* ---------------------------------------------------- the points ledger --- */
 
 const EMPTY_REWARDS = { points: 0, lifetimePoints: 0, streak: 0, orders: [], redemptions: [] };
@@ -747,12 +733,15 @@ function saveRewards(state) {
 
 // Spend first, then earn, so an order can never be paid for with the points
 // that same order is about to pay out.
-function applyOrder(rewards, { meal, original, restaurant, reward, earned }) {
+function applyOrder(rewards, { meal, original, restaurant, reward, earned, lowImpact }) {
   const spent = reward ? reward.cost : 0;
   const entry = {
     at: Date.now(),
     name: meal.name,
-    versus: original.name,
+    // A low-impact order was not chosen over anything, so there is no name for
+    // the history row to put after "saved vs". Swap orders are unchanged.
+    lowImpact: lowImpact === true,
+    versus: lowImpact ? null : original.name,
     carbon: meal.carbon,
     savedKg: Math.max(0, original.carbon - meal.carbon),
     points: earned.total,
@@ -768,53 +757,6 @@ function applyOrder(rewards, { meal, original, restaurant, reward, earned }) {
     redemptions: reward
       ? [{ at: Date.now(), id: reward.id, name: reward.name, cost: reward.cost }, ...rewards.redemptions].slice(0, MAX_HISTORY)
       : rewards.redemptions
-  };
-}
-
-// A claim is a button with no checkout behind it, so nothing about the flow
-// stops it being clicked fifty times. One claim per food per day is the guard:
-// enough to earn again on a genuinely new order tomorrow, not enough to mint
-// points by clicking.
-// Flagged with its own field rather than `kind`: RewardsPage rebuilds the
-// timeline with `{ ...entry, kind: "earn" }`, which would overwrite a `kind`
-// set here. These really are earns, so that mapping is right -- they just need
-// to stay distinguishable inside it.
-function hasClaimedLowImpact(rewards, foodName) {
-  const today = new Date().toDateString();
-  return (rewards.orders || []).some((entry) =>
-    entry.lowImpact === true &&
-    entry.name === foodName &&
-    new Date(entry.at).toDateString() === today
-  );
-}
-
-function applyLowImpactClaim(rewards, { original, venue, earned }) {
-  // The button is already disabled once claimed; this is the guard that keeps
-  // the balance honest if it is ever reached another way.
-  if (hasClaimedLowImpact(rewards, original.name)) return rewards;
-
-  const entry = {
-    at: Date.now(),
-    lowImpact: true,
-    name: original.name,
-    // No swap happened, so there is nothing this was chosen over and nothing
-    // saved against it. The history row reads both, so they are set explicitly
-    // rather than left undefined.
-    versus: null,
-    savedKg: 0,
-    carbon: original.carbon,
-    points: earned.total,
-    venue: venue ? venue.name : null
-  };
-
-  return {
-    ...rewards,
-    points: rewards.points + earned.total,
-    lifetimePoints: rewards.lifetimePoints + earned.total,
-    // Streak is deliberately left alone. It multiplies pointsForOrder, so
-    // bumping it here would quietly raise the next swap's payout — which is
-    // precisely the swap-points behaviour this feature must not change.
-    orders: [entry, ...rewards.orders].slice(0, MAX_HISTORY)
   };
 }
 
@@ -900,24 +842,6 @@ function categoryLabel(placesQuery) {
 // Reserved results key for the searched food's own venue lookup. Alternatives
 // key off their numeric catalog id, so a non-numeric key cannot collide.
 const PICKUP_KEY = "searched-food";
-
-// No delivery platform exposes a public merchant lookup — those APIs are
-// partner-only — so there is no way to check whether a given restaurant is on
-// DoorDash or Uber Eats, or to link to its menu if it is. These open a SEARCH
-// for the venue's name, which may return that restaurant, a different one, or
-// nothing. Hence the "Search" label: the button promises a search, which is all
-// it can deliver. Both patterns verified to resolve; Uber Eats uses /feed, not
-// /search, which 404s.
-const DELIVERY_SEARCHES = [
-  { id: "doordash", label: "DoorDash", href: (q) => `https://www.doordash.com/search/store/${q}/` },
-  { id: "ubereats", label: "Uber Eats", href: (q) => `https://www.ubereats.com/feed?q=${q}` }
-];
-
-function deliverySearchLinks(venueName) {
-  const query = encodeURIComponent(String(venueName || "").trim());
-  if (!query) return [];
-  return DELIVERY_SEARCHES.map((p) => ({ id: p.id, label: p.label, href: p.href(query) }));
-}
 
 // The searched food is not in the catalog, so unlike an alternative it has no
 // placesQuery or dishTerms of its own. Build them from what the user actually
@@ -1318,7 +1242,7 @@ function HomePage({ onSearch, initial, rewards, onOpenRewards }) {
   );
 }
 
-function ResultsPage({ filters, rewards, onBack, onCheckout, onClaimLowImpact }) {
+function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   const [state, setState] = useState({ loading: true });
   const [selectedMeal, setSelectedMeal] = useState(null);
   // Keyed by food name. Fills in after the page has already rendered.
@@ -1560,10 +1484,15 @@ function ResultsPage({ filters, rewards, onBack, onCheckout, onClaimLowImpact })
   // the diet or budget filters — not the food's own footprint — emptied it.
   const showLowerCarbonPanel = !(original.category === "low" && alternatives.length === 0);
 
-  // The award for ordering something already low-impact, and whether today's
-  // has been taken. Both only mean anything on the low-impact path.
-  const lowImpactEarn = pointsForLowImpactChoice(original.carbon);
-  const lowImpactClaimed = hasClaimedLowImpact(rewards, original.name);
+  // Previewed with the same function the swap cards use, so a low-impact order
+  // and a swap can never quote points on different arithmetic. With no swap
+  // there is nothing saved, so this reduces to the footprint term.
+  const lowImpactEarn = pointsForOrder({
+    carbon: original.carbon,
+    savedKg: 0,
+    streak: rewards.streak,
+    lifetimePoints: rewards.lifetimePoints
+  });
 
   // What the currently selected swap would pay out, previewed before checkout.
   const selectedEarn = selectedMeal
@@ -1621,37 +1550,6 @@ function ResultsPage({ filters, rewards, onBack, onCheckout, onClaimLowImpact })
             came back for “{filters.query}”.
           </p>
 
-          {/* Choosing well from the start earns too, at its own smaller rate —
-              no swap was needed, so there is no saving to pay for. */}
-          <div className={`low-impact-claim ${lowImpactClaimed ? "claimed" : ""}`}>
-            <div className="low-impact-claim-text">
-              {lowImpactClaimed ? (
-                <React.Fragment>
-                  <strong>✓ Claimed — {formatPoints(lowImpactEarn.total)} pts added.</strong>{" "}
-                  Already counted for {original.name} today.
-                </React.Fragment>
-              ) : (
-                <React.Fragment>
-                  🌱 <strong>{original.name} is already low impact.</strong> Ordering it earns{" "}
-                  {formatPoints(lowImpactEarn.total)} Green Points — no swap required.
-                </React.Fragment>
-              )}
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary low-impact-claim-btn"
-              disabled={lowImpactClaimed}
-              onClick={() => onClaimLowImpact({
-                original,
-                venue: (pickup.venues && pickup.venues[0]) || null
-              })}
-            >
-              {lowImpactClaimed
-                ? "Earned today"
-                : `Order & earn ${formatPoints(lowImpactEarn.total)} pts`}
-            </button>
-          </div>
-
           {pickup.status === "error" ? (
             <div className="notice notice-warn">{pickup.message}</div>
           ) : pickup.venues.length === 0 ? (
@@ -1691,49 +1589,29 @@ function ResultsPage({ filters, rewards, onBack, onCheckout, onClaimLowImpact })
                     )}
                   </div>
 
+                  {/* Same handoff the swap cards use: onCheckout -> CheckoutPage
+                      -> placeOrder. Ordering a low-impact food is an order like
+                      any other, so it goes through the one order page rather
+                      than out to a third-party site. */}
                   <div className="pickup-actions">
-                    {/* The only ordering link that is verified to belong to this
-                        business: Places returned it for this place specifically. */}
-                    {venue.website && (
-                      <a
-                        className="btn btn-primary pickup-action"
-                        href={venue.website}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={`Opens ${venue.name}'s own site, where their ordering page lives if they have one`}
-                      >
-                        Order on their site ↗
-                      </a>
-                    )}
-                    {venue.mapsUrl && (
-                      <a
-                        className="btn btn-secondary pickup-action"
-                        href={venue.mapsUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="Opens this place on Google Maps for directions, hours and any ordering links Google lists"
-                      >
-                        Directions ↗
-                      </a>
-                    )}
-
-                    {/* Searches, not links to this restaurant — styled apart
-                        from the buttons above so the difference is visible and
-                        not only stated. */}
-                    <div className="pickup-search-row">
-                      {deliverySearchLinks(venue.name).map((link) => (
-                        <a
-                          key={link.id}
-                          className="pickup-search"
-                          href={link.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title={`Searches ${link.label} for “${venue.name}”. We cannot check whether they deliver from there, so this may return a different place or nothing.`}
-                        >
-                          Search {link.label} ↗
-                        </a>
-                      ))}
-                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary pickup-action"
+                      onClick={() => onCheckout({
+                        meal: original,
+                        original,
+                        restaurant: venue,
+                        // No swap, so nothing is saved and there is no saving
+                        // for a trip to be charged against. Sending a cost here
+                        // would render a negative "CO2e saved" on the receipt.
+                        travel: null,
+                        netSaving: 0,
+                        lowImpact: true
+                      })}
+                    >
+                      Order • ${original.price.toFixed(2)}
+                    </button>
+                    <PointsPill points={lowImpactEarn.total} />
                   </div>
                 </div>
               ))}
@@ -2101,6 +1979,10 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
   const [receipt, setReceipt] = useState(null);
   const [rewardId, setRewardId] = useState(null);
   const { meal, original, restaurant, travel } = order;
+  // Ordering a food that was already low-impact. Same page, same arithmetic --
+  // but nothing was swapped, so every line phrased as a saving needs the other
+  // wording. The swap branches below are unchanged.
+  const lowImpact = order.lowImpact === true;
   const foodSaving = original.carbon - meal.carbon;
   const travelCost = travel ? travel.cost : 0;
   // The receipt reports what you actually saved, trip included — reverting to
@@ -2137,8 +2019,14 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
           </p>
 
           <div className="savings-hero">
-            <div className="savings-value">{saved.toFixed(1)} kg</div>
-            <div className="savings-label">CO₂e saved on this order</div>
+            <div className="savings-value">
+              {lowImpact ? `${meal.carbon.toFixed(1)} kg` : `${saved.toFixed(1)} kg`}
+            </div>
+            <div className="savings-label">
+              {lowImpact
+                ? "CO₂e for this order — already a low-impact choice"
+                : "CO₂e saved on this order"}
+            </div>
           </div>
 
           {receipt.tierUp && (
@@ -2158,11 +2046,21 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
           </div>
 
           <p className="confirm-equiv">
-            That is roughly <strong>{milesDrivenEquivalent(saved)} miles</strong> of driving avoided,
-            by choosing {meal.name} over {original.name}
-            {travelCost > 0
-              ? ` — after subtracting the ${travelCost.toFixed(1)} kg it took to collect it.`
-              : "."}
+            {lowImpact ? (
+              <React.Fragment>
+                No swap was needed — <strong>{meal.name}</strong> is already among the
+                lowest-carbon options at {meal.carbon.toFixed(1)} kg CO₂e, so the points
+                are for choosing well from the start.
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                That is roughly <strong>{milesDrivenEquivalent(saved)} miles</strong> of driving avoided,
+                by choosing {meal.name} over {original.name}
+                {travelCost > 0
+                  ? ` — after subtracting the ${travelCost.toFixed(1)} kg it took to collect it.`
+                  : "."}
+              </React.Fragment>
+            )}
           </p>
 
           <div className="confirm-actions">
@@ -2271,12 +2169,20 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
 
         <div className="savings-banner">
           <div>
-            <div className="savings-banner-value">−{saved.toFixed(1)} kg CO₂e</div>
+            <div className="savings-banner-value">
+              {lowImpact ? `${meal.carbon.toFixed(1)} kg CO₂e` : `−${saved.toFixed(1)} kg CO₂e`}
+            </div>
             <div className="savings-banner-label">
-              {travelCost > 0
-                ? `${foodSaving.toFixed(1)} kg saved on food, ${travelCost.toFixed(1)} kg spent getting there`
-                : `versus ${original.name}`}
-              {" • "}≈{milesDrivenEquivalent(saved)} miles not driven
+              {lowImpact ? (
+                `Already low impact — no lower-carbon ${FORMAT_LABELS[meal.format] || "option"} to swap to`
+              ) : (
+                <React.Fragment>
+                  {travelCost > 0
+                    ? `${foodSaving.toFixed(1)} kg saved on food, ${travelCost.toFixed(1)} kg spent getting there`
+                    : `versus ${original.name}`}
+                  {" • "}≈{milesDrivenEquivalent(saved)} miles not driven
+                </React.Fragment>
+              )}
             </div>
           </div>
           <div className="leaf">🌍</div>
@@ -2286,7 +2192,7 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
 
         <button
           className="btn btn-primary btn-checkout"
-          onClick={() => setReceipt(onPlace({ meal, original, restaurant, reward: applied }))}
+          onClick={() => setReceipt(onPlace({ meal, original, restaurant, reward: applied, lowImpact }))}
         >
           Place order • ${total.toFixed(2)}
         </button>
@@ -2546,7 +2452,7 @@ function App() {
 
   // Returns the receipt synchronously. CheckoutPage renders the confirmation in
   // the same click and cannot wait for a state update to come back around.
-  const placeOrder = ({ meal, original, restaurant, reward }) => {
+  const placeOrder = ({ meal, original, restaurant, reward, lowImpact }) => {
     const earned = pointsForOrder({
       carbon: meal.carbon,
       savedKg: original.carbon - meal.carbon,
@@ -2554,7 +2460,7 @@ function App() {
       lifetimePoints: rewards.lifetimePoints
     });
     const before = tierFor(rewards.lifetimePoints);
-    const next = applyOrder(rewards, { meal, original, restaurant, reward, earned });
+    const next = applyOrder(rewards, { meal, original, restaurant, reward, earned, lowImpact });
     updateRewards(next);
     const after = tierFor(next.lifetimePoints);
 
@@ -2564,13 +2470,6 @@ function App() {
       spent: reward ? reward.cost : 0,
       tierUp: after.name === before.name ? null : after
     };
-  };
-
-  // Ordering something already low-impact. Separate from placeOrder: there is
-  // no swap, no checkout and no receipt — just the award landing in the ledger.
-  const claimLowImpact = ({ original, venue }) => {
-    const earned = pointsForLowImpactChoice(original.carbon);
-    updateRewards(applyLowImpactClaim(rewards, { original, venue, earned }));
   };
 
   const redeemReward = (reward) => {
@@ -2600,7 +2499,6 @@ function App() {
           rewards={rewards}
           onBack={() => setPage("home")}
           onCheckout={(next) => { setOrder(next); setPage("checkout"); }}
-          onClaimLowImpact={claimLowImpact}
         />
       </div>
     );
