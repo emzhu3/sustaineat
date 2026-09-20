@@ -454,7 +454,7 @@ function generateAlternatives(original, { diet, budget, query }) {
 
 /* ------------------------------------------------------------- photos ----- */
 
-// Every photo can fail after the page has rendered - a dead Unsplash URL, a
+// Every photo can fail after the page has rendered - a dead stock-photo URL, a
 // Place Photos call that 502s - so each one carries its own fallback tile and
 // swaps to it on error rather than leaving a broken image in the card.
 function FoodPhoto({ photo, name }) {
@@ -955,8 +955,8 @@ function ResultsPage({ filters, onBack, onCheckout }) {
       const suggested = generateAlternatives(original, filters);
 
       // Photos are decoration, so they are fetched alongside the venue lookup
-      // and never awaited: a slow or rate-limited Unsplash must not hold up the
-      // results page. They pop into the cards whenever they arrive.
+      // and never awaited: a slow or rate-limited photo provider must not hold
+      // up the results page. They pop into the cards whenever they arrive.
       setFoodPhotos({});
       if (suggested.length) {
         fetchFoodPhotos(suggested.map((alt) => alt.name))
@@ -1108,9 +1108,9 @@ function ResultsPage({ filters, onBack, onCheckout }) {
               const saved = original.carbon - alt.carbon;
               const photo = foodPhotos[alt.name];
               return (
-                // The credit line sits outside the button on purpose: Unsplash
-                // asks for links back to the photographer, and a link nested
-                // inside a button is invalid and swallows its own clicks.
+                // The credit line sits outside the button on purpose: the
+                // photo provider asks for links back, and a link nested inside
+                // a button is invalid and swallows its own clicks.
                 <div className="alt-cell" key={alt.id}>
                 <button
                   className={`alt-card ${selectedMeal?.id === alt.id ? "active" : ""} ${alt.available ? "" : "unavailable"}`}
@@ -1150,7 +1150,9 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                       {photo.photographer}
                     </a>
                     {" on "}
-                    <a href={photo.unsplashUrl} target="_blank" rel="noopener noreferrer">Unsplash</a>
+                    <a href={photo.sourceUrl} target="_blank" rel="noopener noreferrer">
+                      {photo.source}
+                    </a>
                   </div>
                 )}
                 </div>

@@ -562,10 +562,8 @@ async function fetchFoodPhoto(foodName) {
     console.error(`Pexels search failed (${response.status}) for "${foodName}"`);
     if (reason === 'bad-key' && !photoKeyWarningShown) {
       photoKeyWarningShown = true;
-      console.error('
-  ACTION NEEDED: Pexels rejected PEXELS_API_KEY — check server/.env');
-      console.error('  https://www.pexels.com/api/  Cards show placeholder tiles until then.
-');
+      console.error('\n  ACTION NEEDED: Pexels rejected PEXELS_API_KEY — check server/.env');
+      console.error('  https://www.pexels.com/api/  Cards show placeholder tiles until then.\n');
     }
     return { ok: false, reason }; // deliberately not cached
   }

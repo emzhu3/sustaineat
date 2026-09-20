@@ -3,7 +3,7 @@
 //
 //   node verification/verify-photos.js
 //
-// Adapts to the server it finds: with no UNSPLASH_ACCESS_KEY it asserts the
+// Adapts to the server it finds: with no PEXELS_API_KEY it asserts the
 // placeholder path, and with a key (real or the stub) it asserts a usable photo
 // plus attribution. Run it both ways.
 
@@ -100,7 +100,7 @@ async function main() {
   check('well-formed but unknown reference returns 502 (client swaps in a tile)',
     bogus.status === 502, `got ${bogus.status}`);
 
-  console.log('\n=== /api/food-photos (Unsplash) ===');
+  console.log('\n=== /api/food-photos (Pexels) ===');
 
   const missing = await postJson('/api/food-photos', {});
   check('names[] is required', missing.status === 400, `got ${missing.status}`);
@@ -120,7 +120,7 @@ async function main() {
 
   console.log(`  (configured: ${photos.body.configured})`);
 
-  // In "flaky" mode the first ask for every food is a 403 on purpose, so the
+  // In "flaky" mode the first ask for every food is a 429 on purpose, so the
   // success assertions below would be measuring the stub, not the server.
   if (process.env.EXPECT_FLAKY) {
     console.log('  SKIP  success-path assertions (stub is in flaky mode)');
@@ -135,21 +135,22 @@ async function main() {
     check('a photo came back', usable.length > 0, JSON.stringify(first).slice(0, 200));
 
     if (usable.length) {
-      check('images are hotlinked from images.unsplash.com, as Unsplash requires',
-        usable.every((p) => p.url.startsWith('https://images.unsplash.com/')),
+      check('images are hotlinked from images.pexels.com (no key, no quota)',
+        usable.every((p) => p.url.startsWith('https://images.pexels.com/')),
         usable[0].url);
-      check('the size the card needs is requested, not the full-size original',
-        usable.every((p) => p.url.includes('w=400') && p.url.includes('fit=crop')),
+      check('the size the card needs is requested, not the 4000px original',
+        usable.every((p) => p.url.includes('w=400') && p.url.includes('h=260') &&
+          p.url.includes('fit=crop')),
         usable[0].url);
-      check('the original ixid is preserved',
-        usable.every((p) => p.url.includes('ixid=')), usable[0].url);
       check('photographer is named', usable.every((p) => p.photographer), usable[0].photographer);
-      check('photographer link carries the referral UTM',
-        usable.every((p) => /utm_source=SustainEat&utm_medium=referral/.test(p.photographerUrl)),
+      check('photographer profile is linked',
+        usable.every((p) => /^https:\/\/www\.pexels\.com\/@/.test(p.photographerUrl)),
         usable[0].photographerUrl);
-      check('Unsplash itself is linked with the UTM',
-        usable.every((p) => /unsplash\.com\/\?utm_source=SustainEat/.test(p.unsplashUrl)),
-        usable[0].unsplashUrl);
+      check('the source is labelled for the credit line',
+        usable.every((p) => p.source === 'Pexels'), usable[0].source);
+      check('Pexels is linked back prominently, as their terms ask',
+        usable.every((p) => /^https:\/\/www\.pexels\.com\//.test(p.sourceUrl)),
+        usable[0].sourceUrl);
       check('alt text is present for screen readers', usable.every((p) => p.alt));
       // Not an assertion against the real API: two dishes can legitimately
       // share a top result there. It is worth seeing, not worth failing on.
@@ -158,17 +159,17 @@ async function main() {
       }
     }
 
-    // The hourly demo limit is 50 requests, so a repeat search must not spend
-    // more of it. A cached answer is identical and costs nothing.
+    // A repeat search must not spend more quota. A cached answer is identical
+    // and costs nothing.
     const again = await postJson('/api/food-photos', { names });
     check('a repeat request is served from cache (identical payload)',
       JSON.stringify(again.body.photos) === JSON.stringify(photos.body.photos),
-      'cache miss would burn the 50/hour demo limit');
+      'a cache miss would spend quota on a search already answered');
   }
 
-  // Run with the stub in "flaky" mode: the first ask for each food is a 403.
-  // A cached failure would blank that food until the server restarted, which on
-  // a 50/hour demo limit is exactly how this feature would die on stage.
+  // Run with the stub in "flaky" mode: the first ask for each food is a 429.
+  // A cached failure would blank that food until the server restarted — one bad
+  // minute would otherwise take a card out for the rest of the demo.
   if (process.env.EXPECT_FLAKY) {
     console.log('=== a rate-limit blip must not be cached ===');
     const food = ['Sorbet Cup'];

@@ -71,35 +71,32 @@ source. That is fine for a demo — a USDA key is free and only gates rate limit
 — but do not reuse the pattern for a secret that matters. Those belong in
 `server/.env`, like the Google key.
 
-### 4. Unsplash key — optional, needed for the food photos
+### 4. Pexels key — done ✅
 
-Each alternative card shows a photo of the dish, fetched from Unsplash by food
-name. **Unsplash has no keyless tier.** The old keyless `source.unsplash.com`
-was deprecated in 2021 and switched off for good in June 2024; the API has
-always required a Client-ID. Without a key the app still runs — every card shows
-a plain placeholder tile instead of a photo, and the server says so once at
-start-up.
+Each alternative card shows a photo of the dish, searched on Pexels by food
+name. The key is in `server/.env` as `PEXELS_API_KEY` and is returning live
+photos. Get a replacement free at https://www.pexels.com/api/ if it ever needs
+rotating.
 
-1. https://unsplash.com/developers → **Your apps** → **New Application**
-2. Copy the **Access Key** (not the Secret Key).
-3. Add it to `server/.env`:
+The key is optional in the sense that nothing crashes without it: those cards
+fall back to a plain placeholder tile and the server says so once at start-up.
+A key Pexels *rejects* is called out loudly in the log rather than failing
+quietly.
 
-   ```
-   UNSPLASH_ACCESS_KEY=your_access_key_here
-   ```
-
-4. Restart the server. Nothing else changes.
-
-> **The 50/hour limit is the thing to watch on demo day.** A new Unsplash app is
-> in *Demo* mode: **50 requests per hour**, and each distinct food costs one. A
-> results page shows up to 8 alternatives, so roughly six fresh searches would
-> exhaust the hour on their own. The server caches every answer by food name for
-> its lifetime, so repeating a search is free — rehearse the demo path once and
-> the real run costs nothing. Applying for *Production* raises it to 1,000/hour.
+> **Quota.** Pexels answers with its own limits in the response headers — this
+> key reports **25,000 requests, resetting monthly** (next reset 2026-10-20),
+> with one request per distinct food. Their docs also quote a 200/hour ceiling
+> for free keys, which the headers do not surface. Either way there is a lot of
+> room: the server caches every answer by food name for its lifetime, so
+> repeating a search costs nothing.
 >
-> Loading the images themselves is free: they are hotlinked straight from
-> `images.unsplash.com`, which does not count against the limit (and is what
-> Unsplash asks you to do, so views are counted for the photographer).
+> Loading the images themselves is free and unmetered: they are hotlinked
+> straight from `images.pexels.com`, which needs no key at all.
+
+> **This used to be Unsplash.** Swapped on 2026-09-20 because Unsplash was
+> unreachable. Pexels is the simpler dependency of the two — a bare
+> `Authorization: <key>` header, no UTM parameters, and no download-ping
+> callback to fire. `verification/*.pre-pexels.bak` has the previous version.
 
 ## How it fits together
 
@@ -108,8 +105,8 @@ start-up.
 | `index.html` | Entry point, loads React + Babel from CDN, and the Google Maps JS API |
 | `app.js` | Whole frontend: search, results, map, checkout |
 | `styles.css` | Cream / soft-green theme, all component styles |
-| `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel; `GET /api/place-photo` proxies venue images; `POST /api/food-photos` looks up dish photos on Unsplash |
-| `server/.env` | `GOOGLE_PLACES_API_KEY`, optional `UNSPLASH_ACCESS_KEY`, and `PORT` (gitignored) |
+| `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel; `GET /api/place-photo` proxies venue images; `POST /api/food-photos` looks up dish photos on Pexels |
+| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PEXELS_API_KEY`, and `PORT` (gitignored) |
 
 ### Food formats
 
@@ -147,12 +144,17 @@ reordering `INGREDIENT_RULES` or `FORMAT_OVERRIDES`:
   reference and asks the backend's `/api/place-photo` for the bytes. The key
   never leaves the server. Google's author attribution is printed under each
   thumbnail, which their terms require.
-- **Dish photos** — Unsplash `GET /search/photos`, one lookup per alternative,
+- **Dish photos** — Pexels `GET /v1/search`, one lookup per alternative,
   batched into a single `POST /api/food-photos` call from the page. The search
-  phrase is the food's name plus `UNSPLASH_QUERY_SUFFIX` in `server/server.js`
+  phrase is the food's name plus `PHOTO_QUERY_SUFFIX` in `server/server.js`
   (` food` — it biases hard towards a plated dish rather than a styled product
   shot). That constant is the knob to turn if a card gets a photo that looks
-  nothing like the dish, the way `placesQuery` is the knob for venues.
+  nothing like the dish, the way `placesQuery` is the knob for venues. Stock
+  search is approximate by nature: "Black Bean Burger" can return a generic
+  burger. The card is honest about this — it credits the photographer and links
+  the source, and never claims the photo is of that restaurant's dish.
+  The response the page receives is provider-neutral (`source`, `sourceUrl`),
+  so swapping photo provider again is a server-side change only.
 - **Dish evidence** — each place's Google reviews are searched for the dish
   itself (`dishTerms` in `app.js`: "cashew cheesecake", "vegan cheesecake",
   "cheesecake"). A hit gets the confident wording, *Reviewers mention
@@ -172,9 +174,10 @@ never dies on stage:
   "Sample location", never a real-looking pickup point.
 - A search that legitimately finds nothing → that option is labelled
   "Not available nearby", greyed out and cannot be ordered.
-- No `UNSPLASH_ACCESS_KEY`, nothing matched, or the hourly limit hit → that
-  card shows a plain placeholder tile. A rate-limit blip is never cached, so the
-  photo comes back on the next search rather than staying blank until restart.
+- No `PEXELS_API_KEY`, a key Pexels rejects, nothing matched, or the quota hit →
+  that card shows a plain placeholder tile. A rate-limit blip is never cached,
+  so the photo comes back on the next search rather than staying blank until
+  restart. A rejected key also prints an ACTION NEEDED line, once.
 - A venue has no photo, or the Place Photos call fails → the row shows its text
   only, never a broken image.
 - USDA rate-limited or no match → estimated nutrition for that food.
