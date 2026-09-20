@@ -177,86 +177,6 @@ function milesDrivenEquivalent(kgCO2) {
   return Math.round(kgCO2 * 2.48 * 10) / 10;
 }
 
-/* ------------------------------------------------------ travel to food ---- */
-
-// Collecting a swap is not free. Driving four miles for a lower-carbon dessert
-// can emit more than the swap saves, and a tool that only ever shows the
-// flattering half of that arithmetic is marketing, not measurement.
-//
-// Car is the same EPA 404 g/mile figure used above. Transit is ~0.18 kg CO2e
-// per passenger-mile, typical for US bus service. Walking and cycling count as
-// zero — the marginal emissions of moving your own body a mile are real but
-// far below the resolution of every other number on this page.
-const TRAVEL_MODES = [
-  { id: "drive", label: "Drive", verb: "Driving", icon: "🚗", kgPerMile: 0.404 },
-  { id: "transit", label: "Transit", verb: "Taking transit", icon: "🚌", kgPerMile: 0.18 },
-  { id: "bike", label: "Bike", verb: "Cycling", icon: "🚲", kgPerMile: 0 },
-  { id: "walk", label: "Walk", verb: "Walking", icon: "🚶", kgPerMile: 0 }
-];
-
-function travelModeById(id) {
-  return TRAVEL_MODES.find((mode) => mode.id === id) || TRAVEL_MODES[0];
-}
-
-// Round trip, because you have to get home again. Venue distance is the
-// straight-line haversine the backend computes, so real road distance is
-// always higher — this figure understates the true cost rather than inflating
-// the saving.
-function travelEmissions(distanceMiles, modeId) {
-  return (Number(distanceMiles) || 0) * 2 * travelModeById(modeId).kgPerMile;
-}
-
-/* -------------------------------------------------- nutrition guardrail --- */
-
-// "Eat less" is the trivially correct answer to any carbon question, and a
-// recommender with no guard against it will cheerfully swap a burger for a cup
-// of tea and call it a 7 kg saving. A swap is only honest if what you get is
-// still the same kind of meal.
-//
-// Which nutrient decides that depends on the format. For a main, a breakfast
-// or a soup, protein is the point — losing it means the swap did not feed you.
-// Nobody eats dessert or drinks a latte for the protein, so there the floor
-// goes on calories instead, which is what catches the milkshake-for-tea swap.
-const PROTEIN_FORMATS = new Set(["main", "breakfast", "soup"]);
-const MIN_PROTEIN_RATIO = 0.6;
-const MIN_CALORIE_RATIO = 0.4;
-
-function nutritionFit(original, item) {
-  const usesProtein = PROTEIN_FORMATS.has(item.format);
-  const basis = usesProtein ? "protein" : "calories";
-  const originalValue = usesProtein ? original.protein : original.calories;
-  const itemValue = usesProtein ? item.protein : item.calories;
-
-  // With nothing credible to compare against, do not invent a verdict — an
-  // unfounded "comparable protein" badge is worse than no badge at all.
-  if (!originalValue || originalValue <= 0) {
-    return { comparable: true, basis: null };
-  }
-
-  const ratio = itemValue / originalValue;
-  return {
-    comparable: ratio >= (usesProtein ? MIN_PROTEIN_RATIO : MIN_CALORIE_RATIO),
-    basis,
-    ratio,
-    original: originalValue,
-    value: itemValue
-  };
-}
-
-// "substantially less calories" is wrong; the basis key cannot be dropped
-// straight into a sentence.
-const FIT_SHORTFALL = { protein: "less protein", calories: "fewer calories" };
-
-function nutritionFitLabel(fit) {
-  if (!fit || !fit.basis) return null;
-  const mine = Math.round(fit.value);
-  const theirs = Math.round(fit.original);
-  const amounts = fit.basis === "protein" ? `${mine}g vs ${theirs}g` : `${mine} vs ${theirs} cal`;
-  return fit.comparable
-    ? `Comparable ${fit.basis} — ${amounts}`
-    : `${Math.round(fit.ratio * 100)}% the ${fit.basis} — ${amounts}`;
-}
-
 function titleCase(text) {
   return (text || "").replace(/\w\S*/g, (word) => (/[a-z]/.test(word) ? word : word[0] + word.slice(1).toLowerCase()));
 }
@@ -496,45 +416,25 @@ function generateAlternatives(original, { diet, budget, query }) {
       // Nudge toward the same dish the user asked for, but keep the bonus small
       // enough that it cannot outrank a substantially lower-carbon option.
       const relevance = words.some((word) => name.includes(word)) ? 2 : 0;
-      return {
-        ...item,
-        fit: nutritionFit(original, item),
-        rankScore: (originalCarbon - item.carbon) * 3 + relevance
-      };
+      return { ...item, rankScore: (originalCarbon - item.carbon) * 3 + relevance };
     })
-    // A nutritionally comparable swap outranks a lower-carbon one that leaves
-    // you hungry, however big the carbon number on it looks.
-    .sort((a, b) => Number(b.fit.comparable) - Number(a.fit.comparable) || b.rankScore - a.rankScore);
+    .sort((a, b) => b.rankScore - a.rankScore);
 
   // Vary the ingredient so the list is not three near-identical bean bowls.
-  const take = (pool, limit) => {
-    const chosen = [];
-    const usedIngredients = new Set();
-    for (const item of pool) {
-      if (usedIngredients.has(item.ingredient)) continue;
-      usedIngredients.add(item.ingredient);
-      chosen.push(item);
-      if (chosen.length === limit) break;
-    }
-    for (const item of pool) {
-      if (chosen.length === limit) break;
-      if (!chosen.includes(item)) chosen.push(item);
-    }
-    return chosen;
-  };
+  const picked = [];
+  const usedIngredients = new Set();
+  for (const item of candidates) {
+    if (usedIngredients.has(item.ingredient)) continue;
+    usedIngredients.add(item.ingredient);
+    picked.push(item);
+    if (picked.length === 3) break;
+  }
+  for (const item of candidates) {
+    if (picked.length === 3) break;
+    if (!picked.includes(item)) picked.push(item);
+  }
 
-  const comparable = candidates.filter((item) => item.fit.comparable);
-  const flagged = candidates.filter((item) => !item.fit.comparable);
-
-  const picked = take(comparable, 3);
-
-  // Carry a couple of the flagged options too, even though they are hidden by
-  // default. These are exactly what a carbon-only recommender would have put
-  // at the top — a 5 kcal tea "beating" a milkshake — so keeping them, hidden
-  // and labelled, is what makes the guardrail visible instead of silent.
-  const extras = take(flagged, picked.length ? 2 : 3);
-
-  return [...picked, ...extras].map((item, idx) => ({
+  return picked.map((item, idx) => ({
     id: idx + 2,
     name: item.name,
     ingredient: item.ingredient,
@@ -547,247 +447,9 @@ function generateAlternatives(original, { diet, budget, query }) {
     carbs: item.carbs,
     fat: item.fat,
     tags: item.tags,
-    fit: item.fit,
     placesQuery: item.placesQuery,
     dishTerms: item.dishTerms
   }));
-}
-
-/* ------------------------------------------------------------- rewards ---- */
-
-// The app only ever asks one thing of you — take the lower-carbon swap — so the
-// reward has to track exactly that. Two independent earners, both continuous so
-// there is no cliff where one more gram of CO2e costs you a whole tier:
-//
-//   1. the footprint of what you ordered  (lower = more)
-//   2. how much that saved against what you searched for
-//
-// Everything else (streak, tier) is a multiplier on top, never a replacement.
-
-const REWARDS_STORAGE_KEY = "sustaineat.rewards.v1";
-
-// Beef sits at 8.5 kg and lamb at 20, so a ceiling of 8 means the meat-heavy end
-// of the catalog earns nothing from its own footprint and has to rely on the
-// saving. A berry sorbet at 0.3 earns the near-full 116.
-const FOOTPRINT_CEILING = 8.0;
-const POINTS_PER_KG_UNDER_CEILING = 15;
-
-const POINTS_PER_KG_SAVED = 25;
-// A lamb-to-sorbet swap genuinely saves ~19.7 kg, but letting one order pay out
-// 490 points makes every order after it feel pointless. Count the first 12 kg.
-const MAX_SAVED_KG_COUNTED = 12;
-
-// Consecutive LOW-impact orders. Capped, or a long streak would dwarf the
-// footprint signal the whole scheme is built on.
-const STREAK_BONUS_PER_ORDER = 0.1;
-const MAX_STREAK_MULTIPLIER = 1.5;
-
-// Only the last N entries are kept, so the ledger cannot grow without bound in
-// localStorage.
-const MAX_HISTORY = 25;
-
-// Tier is earned on LIFETIME points and never falls when you spend, so
-// redeeming a reward can never demote you.
-const TIERS = [
-  { name: "Seedling",   icon: "🌱", min: 0,     multiplier: 1.0,  perk: "You are earning points on every swap" },
-  { name: "Sprout",     icon: "🌿", min: 500,   multiplier: 1.05, perk: "+5% points on every order" },
-  { name: "Sapling",    icon: "🪴", min: 1500,  multiplier: 1.1,  perk: "+10% points, early access to new rewards" },
-  { name: "Canopy",     icon: "🌳", min: 4000,  multiplier: 1.15, perk: "+15% points, free pickup upgrades" },
-  { name: "Old Growth", icon: "🌲", min: 10000, multiplier: 1.2,  perk: "+20% points, a tree planted every month" }
-];
-
-// `discount` is dollars off an order and is applied at checkout. A reward with
-// no discount is a perk, redeemed straight from the rewards page.
-const REWARD_CATALOG = [
-  { id: "off-2",   cost: 300,  discount: 2,  icon: "🎟️", name: "$2 off",      detail: "Straight off your next pickup order." },
-  { id: "milk",    cost: 550,  discount: 0,  icon: "🥤", name: "Plant-milk upgrade", detail: "Oat, soy or almond on the house at any partner cafe." },
-  { id: "off-5",   cost: 700,  discount: 5,  icon: "🎟️", name: "$5 off",      detail: "Enough to cover a sorbet outright." },
-  { id: "tree",    cost: 900,  discount: 0,  icon: "🌳", name: "Plant a tree", detail: "We fund one sapling through a reforestation partner, in your name." },
-  { id: "off-10",  cost: 1300, discount: 10, icon: "🎟️", name: "$10 off",     detail: "Roughly a whole grain bowl, free." },
-  { id: "off-20",  cost: 2400, discount: 20, icon: "🏅", name: "$20 off",      detail: "The big one. Two lunches on us." }
-];
-
-function rewardById(id) {
-  return REWARD_CATALOG.find((reward) => reward.id === id) || null;
-}
-
-function footprintPoints(carbon) {
-  return Math.round(Math.max(0, FOOTPRINT_CEILING - carbon) * POINTS_PER_KG_UNDER_CEILING);
-}
-
-function savingsPoints(savedKg) {
-  const counted = Math.min(Math.max(0, savedKg || 0), MAX_SAVED_KG_COUNTED);
-  return Math.round(counted * POINTS_PER_KG_SAVED);
-}
-
-function streakMultiplier(streak) {
-  return Math.min(MAX_STREAK_MULTIPLIER, 1 + Math.max(0, streak || 0) * STREAK_BONUS_PER_ORDER);
-}
-
-function tierFor(lifetimePoints) {
-  let current = TIERS[0];
-  for (const tier of TIERS) {
-    if (lifetimePoints >= tier.min) current = tier;
-  }
-  return current;
-}
-
-function nextTierFor(lifetimePoints) {
-  return TIERS.find((tier) => lifetimePoints < tier.min) || null;
-}
-
-// How far through the current tier you are, for the progress bar.
-function tierProgress(lifetimePoints) {
-  const current = tierFor(lifetimePoints);
-  const next = nextTierFor(lifetimePoints);
-  if (!next) return 100;
-  return Math.min(100, Math.round(((lifetimePoints - current.min) / (next.min - current.min)) * 100));
-}
-
-// Single source of truth for the arithmetic, so the "+230 pts" on a results
-// card, the checkout preview and the receipt can never disagree.
-function pointsForOrder({ carbon, savedKg, streak, lifetimePoints }) {
-  const footprint = footprintPoints(carbon);
-  const savings = savingsPoints(savedKg);
-  const streakMult = streakMultiplier(streak);
-  const tier = tierFor(lifetimePoints || 0);
-  const saved = Math.max(0, savedKg || 0);
-  const countedKg = Math.min(saved, MAX_SAVED_KG_COUNTED);
-  return {
-    footprint,
-    savings,
-    savedKg: saved,
-    countedKg,
-    // Surfaced on the receipt, so a lamb swap does not read as a
-    // contradiction: 19.5 kg saved above, points for only 12 below.
-    capped: countedKg < saved,
-    streak: streak || 0,
-    streakMult,
-    tier,
-    total: Math.round((footprint + savings) * streakMult * tier.multiplier)
-  };
-}
-
-/* ---------------------------------------------------- the points ledger --- */
-
-const EMPTY_REWARDS = { points: 0, lifetimePoints: 0, streak: 0, orders: [], redemptions: [] };
-
-const safeNumber = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
-const safeList = (value) => (Array.isArray(value) ? value.slice(0, MAX_HISTORY) : []);
-
-function loadRewards() {
-  try {
-    const raw = window.localStorage.getItem(REWARDS_STORAGE_KEY);
-    if (!raw) return { ...EMPTY_REWARDS };
-    const parsed = JSON.parse(raw) || {};
-    // Re-derive every field rather than trusting the blob: a half-written or
-    // hand-edited entry should cost you history, not turn the balance into NaN
-    // and render "NaN pts" for the rest of the demo.
-    return {
-      points: Math.max(0, safeNumber(parsed.points)),
-      lifetimePoints: Math.max(0, safeNumber(parsed.lifetimePoints)),
-      streak: Math.max(0, safeNumber(parsed.streak)),
-      orders: safeList(parsed.orders),
-      redemptions: safeList(parsed.redemptions)
-    };
-  } catch (err) {
-    // A private window, blocked site data or a corrupt entry all land here. A
-    // demo must not die because the browser will not remember anything.
-    return { ...EMPTY_REWARDS };
-  }
-}
-
-function saveRewards(state) {
-  try {
-    window.localStorage.setItem(REWARDS_STORAGE_KEY, JSON.stringify(state));
-  } catch (err) {
-    // Storage full or unavailable — the session keeps working in memory.
-  }
-  return state;
-}
-
-// Spend first, then earn, so an order can never be paid for with the points
-// that same order is about to pay out.
-function applyOrder(rewards, { meal, original, restaurant, reward, earned }) {
-  const spent = reward ? reward.cost : 0;
-  const entry = {
-    at: Date.now(),
-    name: meal.name,
-    versus: original.name,
-    carbon: meal.carbon,
-    savedKg: Math.max(0, original.carbon - meal.carbon),
-    points: earned.total,
-    venue: restaurant ? restaurant.name : null
-  };
-  return {
-    points: Math.max(0, rewards.points - spent) + earned.total,
-    lifetimePoints: rewards.lifetimePoints + earned.total,
-    // Only a genuinely low-impact order extends the streak; a medium one ends
-    // it. Otherwise "streak" would just mean "ordered again".
-    streak: meal.category === "low" ? rewards.streak + 1 : 0,
-    orders: [entry, ...rewards.orders].slice(0, MAX_HISTORY),
-    redemptions: reward
-      ? [{ at: Date.now(), id: reward.id, name: reward.name, cost: reward.cost }, ...rewards.redemptions].slice(0, MAX_HISTORY)
-      : rewards.redemptions
-  };
-}
-
-function applyRedemption(rewards, reward) {
-  return {
-    ...rewards,
-    points: Math.max(0, rewards.points - reward.cost),
-    redemptions: [{ at: Date.now(), id: reward.id, name: reward.name, cost: reward.cost }, ...rewards.redemptions].slice(0, MAX_HISTORY)
-  };
-}
-
-/* ------------------------------------------------------------- photos ----- */
-
-// Every photo can fail after the page has rendered - a dead stock-photo URL, a
-// Place Photos call that 502s - so each one carries its own fallback tile and
-// swaps to it on error rather than leaving a broken image in the card.
-function FoodPhoto({ photo, name }) {
-  const [failed, setFailed] = useState(false);
-  const usable = photo && photo.ok && photo.url && !failed;
-
-  if (!usable) {
-    return <div className="card-photo card-photo-empty" aria-hidden="true">🍽️</div>;
-  }
-
-  return (
-    <div className="card-photo">
-      <img
-        src={photo.url}
-        alt={photo.alt || name}
-        loading="lazy"
-        onError={() => setFailed(true)}
-      />
-    </div>
-  );
-}
-
-// Google requires the attribution wherever the image appears, so the caption is
-// rendered from authorAttributions and the photo is only shown when it is there
-// to render alongside.
-function VenuePhoto({ photo, venueName }) {
-  const [failed, setFailed] = useState(false);
-  const src = placePhotoUrl(photo, 200);
-  if (!src || failed) return null;
-
-  return (
-    <div className="venue-thumb">
-      <img
-        src={src}
-        alt={`${venueName}`}
-        loading="lazy"
-        onError={() => setFailed(true)}
-      />
-      {photo.attribution && (
-        <span className="venue-thumb-credit" title={`Photo: ${photo.attribution}`}>
-          {photo.attribution}
-        </span>
-      )}
-    </div>
-  );
 }
 
 /* ------------------------------------------------------------ backend ----- */
@@ -828,26 +490,6 @@ async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternat
         dishTerms: alt.dishTerms
       }))
     })
-  });
-  if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-  return response.json();
-}
-
-// The image bytes come through the backend, never straight from Google: the
-// media URL needs the Places key, and that key must not reach the browser.
-function placePhotoUrl(photo, maxWidth) {
-  if (!photo || !photo.name) return null;
-  return `${BACKEND_URL}/api/place-photo?name=${encodeURIComponent(photo.name)}` +
-    `&maxWidth=${maxWidth || 400}`;
-}
-
-// One request for the whole grid. Keyed by food name, which is what the cards
-// are keyed by too, so the lookup on render is direct.
-async function fetchFoodPhotos(names) {
-  const response = await fetch(`${BACKEND_URL}/api/food-photos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names })
   });
   if (!response.ok) throw new Error(`Backend returned ${response.status}`);
   return response.json();
@@ -1106,7 +748,7 @@ function MiniMap({ origin, restaurants, selectedId, onSelect }) {
   );
 }
 
-function HomePage({ onSearch, initial, rewards, onOpenRewards }) {
+function HomePage({ onSearch, initial }) {
   const [searchQuery, setSearchQuery] = useState(initial.query || "");
   const [diet, setDiet] = useState(initial.diet || "none");
   const [budget, setBudget] = useState(initial.budget || "");
@@ -1137,8 +779,6 @@ function HomePage({ onSearch, initial, rewards, onOpenRewards }) {
       <div className="header">
         <h1 className="logo">🌱 SustainEat</h1>
       </div>
-
-      <RewardsSummary rewards={rewards} onOpen={onOpenRewards} />
 
       <div className="hero">
         <h2>What are you craving right now?</h2>
@@ -1199,15 +839,9 @@ function HomePage({ onSearch, initial, rewards, onOpenRewards }) {
   );
 }
 
-function ResultsPage({ filters, rewards, onBack, onCheckout }) {
+function ResultsPage({ filters, onBack, onCheckout }) {
   const [state, setState] = useState({ loading: true });
   const [selectedMeal, setSelectedMeal] = useState(null);
-  // Keyed by food name. Fills in after the page has already rendered.
-  const [foodPhotos, setFoodPhotos] = useState({});
-  // Driving is the honest default: it is what most people actually do for a
-  // pickup, and it is the only mode under which a swap can come out negative.
-  const [travelMode, setTravelMode] = useState("drive");
-  const [comparableOnly, setComparableOnly] = useState(true);
   // Must sit above the loading early-return: hooks cannot be conditional.
   const mapsState = useGoogleMapsState();
 
@@ -1247,16 +881,6 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
       };
 
       const suggested = generateAlternatives(original, filters);
-
-      // Photos are decoration, so they are fetched alongside the venue lookup
-      // and never awaited: a slow or rate-limited photo provider must not hold
-      // up the results page. They pop into the cards whenever they arrive.
-      setFoodPhotos({});
-      if (suggested.length) {
-        fetchFoodPhotos(suggested.map((alt) => alt.name))
-          .then((payload) => { if (!cancelled) setFoodPhotos(payload.photos || {}); })
-          .catch(() => { /* cards keep their placeholder tiles */ });
-      }
 
       // Each suggestion has to earn its place by resolving to a real venue.
       let alternatives = suggested.map((alt) => ({
@@ -1330,33 +954,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   }
 
   const { original, alternatives, restaurantNotice, notes } = state;
-  const mode = travelModeById(travelMode);
-
-  // The saving on the food, the emissions of going to collect it, and what is
-  // actually left over. Recomputed on render so changing travel mode updates
-  // every card without refetching anything.
-  const scored = alternatives.map((alt) => {
-    const foodSaving = original.carbon - alt.carbon;
-    const travelCost = alt.venue ? travelEmissions(alt.venue.distance, travelMode) : 0;
-    return { ...alt, foodSaving, travelCost, netSaving: foodSaving - travelCost };
-  });
-
-  const ranked = scored.sort((a, b) =>
-    Number(b.available) - Number(a.available) ||
-    Number(b.fit.comparable) - Number(a.fit.comparable) ||
-    b.netSaving - a.netSaving
-  );
-
-  const flaggedCount = ranked.filter((alt) => !alt.fit.comparable).length;
-  // Never let the guardrail empty the page. If every option is a nutritional
-  // downgrade, that is worth showing and labelling, not hiding.
-  const hidingFlagged = comparableOnly && flaggedCount > 0 && flaggedCount < ranked.length;
-  const visibleAlternatives = hidingFlagged ? ranked.filter((alt) => alt.fit.comparable) : ranked;
-  const availableAlternatives = visibleAlternatives.filter((alt) => alt.available);
-
-  // selectedMeal is held by identity from before these fields existed, so look
-  // the scored copy back up rather than reading stale numbers off it.
-  const selected = selectedMeal ? ranked.find((alt) => alt.id === selectedMeal.id) || null : null;
+  const availableAlternatives = alternatives.filter((alt) => alt.available);
 
   // One entry per distinct shop, carrying every alternative it can serve.
   const venueGroups = [];
@@ -1386,26 +984,9 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   const formatLabel = FORMAT_LABELS[original.format] || FORMAT_LABELS.main;
   const bestAlternative = availableAlternatives[0];
 
-  // What the currently selected swap would pay out, previewed before checkout.
-  const selectedEarn = selectedMeal
-    ? pointsForOrder({
-        carbon: selectedMeal.carbon,
-        savedKg: original.carbon - selectedMeal.carbon,
-        streak: rewards.streak,
-        lifetimePoints: rewards.lifetimePoints
-      })
-    : null;
-
   return (
     <div className="results-page">
-      <div className="results-top">
-        <button className="btn btn-back" onClick={onBack}>← Back</button>
-        {/* Plain text, not a link: navigating away would unmount the page and
-            re-run the (billable) Places search on the way back. */}
-        <span className="points-chip" title="Green Points — place an order to earn more">
-          {tierFor(rewards.lifetimePoints).icon} {formatPoints(rewards.points)} pts
-        </span>
-      </div>
+      <button className="btn btn-back" onClick={onBack}>← Back</button>
 
       {notes.map((note, idx) => (
         <div className="notice notice-warn" key={idx}>{note}</div>
@@ -1433,53 +1014,6 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           {dietLabel && <span className="chip chip-green">{dietLabel}</span>}
         </div>
 
-        {alternatives.length > 0 && (
-          <div className="controls-row">
-            <div className="control-block">
-              <span className="control-label">Getting there</span>
-              <div className="mode-toggle" role="group" aria-label="Travel mode">
-                {TRAVEL_MODES.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`mode-btn ${travelMode === option.id ? "active" : ""}`}
-                    aria-pressed={travelMode === option.id}
-                    onClick={() => setTravelMode(option.id)}
-                  >
-                    <span aria-hidden="true">{option.icon}</span> {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <label className="control-check">
-              <input
-                type="checkbox"
-                checked={comparableOnly}
-                onChange={(e) => setComparableOnly(e.target.checked)}
-              />
-              Nutritionally comparable only
-            </label>
-          </div>
-        )}
-
-        {hidingFlagged && (
-          <div className="notice notice-info notice-guardrail">
-            {flaggedCount} option{flaggedCount === 1 ? "" : "s"} hidden for giving you substantially{" "}
-            {FIT_SHORTFALL[ranked.find((alt) => !alt.fit.comparable).fit.basis]} than{" "}
-            {original.name} — eating less is not a swap. Untick the box to see{" "}
-            {flaggedCount === 1 ? "it" : "them"} anyway.
-          </div>
-        )}
-
-        {comparableOnly && flaggedCount > 0 && flaggedCount === ranked.length && (
-          <div className="notice notice-warn">
-            Every lower-carbon {FORMAT_CHIP_LABELS[original.format] || "option"} we found gives you
-            substantially {FIT_SHORTFALL[ranked[0].fit.basis]} than {original.name}. They are shown
-            below and flagged, rather than hidden, so the trade-off is yours to make.
-          </div>
-        )}
-
         {alternatives.length === 0 ? (
           <p className="empty-note">
             {original.category === "low"
@@ -1488,22 +1022,11 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           </p>
         ) : (
           <div className="alt-grid">
-            {visibleAlternatives.map((alt) => {
-              const fitLabel = nutritionFitLabel(alt.fit);
-              const netLoss = alt.available && alt.netSaving <= 0;
-              const photo = foodPhotos[alt.name];
-              const earn = pointsForOrder({
-                carbon: alt.carbon,
-                savedKg: saved,
-                streak: rewards.streak,
-                lifetimePoints: rewards.lifetimePoints
-              });
+            {alternatives.map((alt) => {
+              const saved = original.carbon - alt.carbon;
               return (
-                // The credit line sits outside the button on purpose: the
-                // photo provider asks for links back, and a link nested inside
-                // a button is invalid and swallows its own clicks.
-                <div className="alt-cell" key={alt.id}>
                 <button
+                  key={alt.id}
                   className={`alt-card ${selectedMeal?.id === alt.id ? "active" : ""} ${alt.available ? "" : "unavailable"}`}
                   aria-disabled={alt.available ? undefined : "true"}
                   title={alt.available
@@ -1511,39 +1034,10 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                     : "No nearby place was found serving this, so it cannot be ordered"}
                   onClick={() => { if (alt.available) setSelectedMeal(alt); }}
                 >
-                  {/* Keyed by URL so a failed image does not stay failed when
-                      the next search puts a different photo in this slot. */}
-                  <FoodPhoto key={(photo && photo.url) || alt.name} photo={photo} name={alt.name} />
                   <div className="alt-name">{alt.name}</div>
                   <div className="alt-carbon">{alt.carbon.toFixed(1)} kg CO₂e</div>
-
-                  {/* Without a venue there is no trip to charge for, so the
-                      food saving is the only honest number to show. */}
-                  {alt.available ? (
-                    <React.Fragment>
-                      <div className={`alt-save ${netLoss ? "alt-save-loss" : ""}`}>
-                        {netLoss
-                          ? `costs ${Math.abs(alt.netSaving).toFixed(1)} kg net`
-                          : `saves ${alt.netSaving.toFixed(1)} kg net`}
-                      </div>
-                      {alt.travelCost > 0 && (
-                        <div className="alt-breakdown">
-                          {alt.foodSaving.toFixed(1)} food − {alt.travelCost.toFixed(1)} trip
-                        </div>
-                      )}
-                    </React.Fragment>
-                  ) : (
-                    <div className="alt-save">saves {alt.foodSaving.toFixed(1)} kg</div>
-                  )}
-
-                  {fitLabel && (
-                    <div className={`alt-fit ${alt.fit.comparable ? "" : "alt-fit-warn"}`}>
-                      {alt.fit.comparable ? "✓" : "⚠"} {fitLabel}
-                    </div>
-                  )}
-
+                  <div className="alt-save">saves {saved.toFixed(1)} kg</div>
                   <div className="alt-price">${alt.price.toFixed(2)}</div>
-                  <PointsPill points={earn.total} muted={!alt.available} />
                   <div className="alt-tags">
                     {alt.tags.slice(0, 2).map((tag) => <span className="tag" key={tag}>{tag}</span>)}
                   </div>
@@ -1560,53 +1054,17 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                     <div className="alt-venue alt-venue-none">Not available nearby</div>
                   )}
                 </button>
-                {photo && photo.ok && (
-                  <div className="photo-credit">
-                    Photo:{" "}
-                    <a href={photo.photographerUrl} target="_blank" rel="noopener noreferrer">
-                      {photo.photographer}
-                    </a>
-                    {" on "}
-                    <a href={photo.sourceUrl} target="_blank" rel="noopener noreferrer">
-                      {photo.source}
-                    </a>
-                  </div>
-                )}
-                </div>
               );
             })}
           </div>
         )}
 
         {bestAlternative && (
-          bestAlternative.netSaving <= 0 ? (
-            /* The swap losing to its own pickup trip is not an edge case to
-               hide. It is the most useful thing this page can tell you. */
-            <div className="impact-callout impact-callout-loss">
-              <strong>{bestAlternative.name}</strong> saves only{" "}
-              {bestAlternative.foodSaving.toFixed(1)} kg CO₂e on the food, but{" "}
-              {mode.verb.toLowerCase()} the {bestAlternative.venue.distance} mi round trip costs{" "}
-              {bestAlternative.travelCost.toFixed(1)} kg — so you would come out{" "}
-              <strong>{Math.abs(bestAlternative.netSaving).toFixed(1)} kg worse off</strong>. Walk or
-              cycle there, or keep what you were having.
-            </div>
-          ) : bestAlternative.travelCost > 0 ? (
-            <div className="impact-callout">
-              Switching to <strong>{bestAlternative.name}</strong> saves{" "}
-              {bestAlternative.foodSaving.toFixed(1)} kg CO₂e on the food. {mode.verb} the{" "}
-              {bestAlternative.venue.distance} mi round trip costs{" "}
-              {bestAlternative.travelCost.toFixed(1)} kg back, leaving{" "}
-              <strong>{bestAlternative.netSaving.toFixed(1)} kg net</strong> — about{" "}
-              {milesDrivenEquivalent(bestAlternative.netSaving)} miles of driving.
-            </div>
-          ) : (
-            <div className="impact-callout">
-              Switching to <strong>{bestAlternative.name}</strong> saves{" "}
-              <strong>{bestAlternative.netSaving.toFixed(1)} kg CO₂e</strong> — about{" "}
-              {milesDrivenEquivalent(bestAlternative.netSaving)} miles of driving, and{" "}
-              {mode.verb.toLowerCase()} there adds nothing back.
-            </div>
-          )
+          <div className="impact-callout">
+            Switching to <strong>{bestAlternative.name}</strong> saves{" "}
+            <strong>{(original.carbon - bestAlternative.carbon).toFixed(1)} kg CO₂e</strong> — about{" "}
+            {milesDrivenEquivalent(original.carbon - bestAlternative.carbon)} miles of driving.
+          </div>
         )}
       </section>
 
@@ -1663,20 +1121,12 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                   onClick={() => setSelectedMeal(group.alts[0])}
                 >
                   <span className="restaurant-index">{i + 1}</span>
-                  <VenuePhoto
-                    key={(group.venue.photo && group.venue.photo.name) || group.key}
-                    photo={group.venue.photo}
-                    venueName={group.venue.name}
-                  />
                   <div className="restaurant-row-body">
                     <div className="restaurant-name">{group.venue.name}</div>
                     <div className="restaurant-meta">
                       {group.venue.distance} mi
                       {group.venue.rating ? ` • ⭐ ${group.venue.rating}` : ""}
                       {group.venue.priceLevel ? ` • ${group.venue.priceLevel}` : ""}
-                      {mode.kgPerMile > 0
-                        ? ` • ${travelEmissions(group.venue.distance, travelMode).toFixed(1)} kg to reach`
-                        : ""}
                     </div>
                     <div className="restaurant-address">{group.venue.address}</div>
                     <div className="restaurant-serves">
@@ -1698,58 +1148,32 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
       </section>
       )}
 
-      {selected && (
+      {selectedMeal && (
         <section className="panel details-panel slide-in">
-          <h3>{selected.name}</h3>
-          <SustainabilityBadge carbon={selected.carbon} category={selected.category} />
-          <NutritionGrid meal={selected} />
+          <h3>{selectedMeal.name}</h3>
+          <SustainabilityBadge carbon={selectedMeal.carbon} category={selectedMeal.category} />
+          <NutritionGrid meal={selectedMeal} />
 
-          <div className="impact-ledger">
-            <div className="impact-row">
-              <span>Food saving vs {original.name}</span>
-              <strong className="ledger-credit">−{selected.foodSaving.toFixed(1)} kg</strong>
-            </div>
-            <div className="impact-row">
-              <span>
-                {mode.label} {selected.venue ? `${selected.venue.distance} mi` : ""} round trip
-              </span>
-              <strong className={selected.travelCost > 0 ? "ledger-debit" : ""}>
-                +{selected.travelCost.toFixed(1)} kg
-              </strong>
-            </div>
-            <div className="impact-row impact-row-total">
-              <span>Net</span>
-              <strong className={selected.netSaving > 0 ? "ledger-credit" : "ledger-debit"}>
-                {selected.netSaving > 0
-                  ? `−${selected.netSaving.toFixed(1)} kg saved`
-                  : `+${Math.abs(selected.netSaving).toFixed(1)} kg worse`}
-              </strong>
-            </div>
-          </div>
-
-          <div className="earn-callout">
-            🌱 Earns <strong>{formatPoints(selectedEarn.total)} Green Points</strong>
-            {selectedEarn.streakMult > 1
-              ? " — your ×" + selectedEarn.streakMult.toFixed(2) + " streak bonus is included"
-              : " — redeemable for discounts on future orders"}.
+          <div className="impact-callout">
+            ✨ Saves <strong>{(original.carbon - selectedMeal.carbon).toFixed(1)} kg CO₂e</strong> versus {original.name}.
           </div>
 
           {selectedMeal.venue && (
             <div className="venue-block">
               <div className="venue-line">
-                📍 {selected.venue.name} • {selected.venue.distance} mi
-                {selected.venue.address ? ` • ${selected.venue.address}` : ""}
+                📍 {selectedMeal.venue.name} • {selectedMeal.venue.distance} mi
+                {selectedMeal.venue.address ? ` • ${selectedMeal.venue.address}` : ""}
               </div>
-              {selected.evidence && selected.evidence.quote ? (
+              {selectedMeal.evidence && selectedMeal.evidence.quote ? (
                 <blockquote className="venue-quote">
-                  “{selected.evidence.quote}”
+                  “{selectedMeal.evidence.quote}”
                   <span className="venue-quote-by">
-                    — Google review{selected.evidence.rating ? `, ${selected.evidence.rating}★` : ""}
+                    — Google review{selectedMeal.evidence.rating ? `, ${selectedMeal.evidence.rating}★` : ""}
                   </span>
                 </blockquote>
               ) : (
                 <div className="venue-caveat">
-                  Matched on category ({categoryLabel(selected.placesQuery).toLowerCase()}) — no
+                  Matched on category ({categoryLabel(selectedMeal.placesQuery).toLowerCase()}) — no
                   review here names this dish, so it may not be on the menu.
                 </div>
               )}
@@ -1757,16 +1181,10 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           )}
 
           <div className="checkout-row">
-            <span className="price">${selected.price.toFixed(2)}</span>
+            <span className="price">${selectedMeal.price.toFixed(2)}</span>
             <button
               className="btn btn-primary btn-checkout"
-              onClick={() => onCheckout({
-                meal: selected,
-                original,
-                restaurant: selected.venue,
-                travel: { mode: mode.id, label: mode.label, cost: selected.travelCost },
-                netSaving: selected.netSaving
-              })}
+              onClick={() => onCheckout({ meal: selectedMeal, original, restaurant: selectedMeal.venue })}
             >
               Proceed to Checkout
             </button>
@@ -1777,36 +1195,14 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   );
 }
 
-function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }) {
-  const [receipt, setReceipt] = useState(null);
-  const [rewardId, setRewardId] = useState(null);
-  const { meal, original, restaurant, travel } = order;
-  const foodSaving = original.carbon - meal.carbon;
-  const travelCost = travel ? travel.cost : 0;
-  // The receipt reports what you actually saved, trip included — reverting to
-  // the food-only figure here would undo the point of the whole page.
-  const saved = typeof order.netSaving === "number" ? order.netSaving : foodSaving;
+function CheckoutPage({ order, onDone, onBack }) {
+  const [placed, setPlaced] = useState(false);
+  const { meal, original, restaurant } = order;
+  const saved = original.carbon - meal.carbon;
+  const tax = meal.price * 0.0825;
+  const total = meal.price + tax;
 
-  // Only dollar-off rewards can ride along on an order. Perks (a tree, a milk
-  // upgrade) are redeemed straight from the rewards page instead.
-  const vouchers = REWARD_CATALOG.filter((reward) => reward.discount > 0);
-  const applied = rewardId ? rewardById(rewardId) : null;
-  // A $10 voucher against a $6 sorbet cannot hand back change.
-  const discount = applied ? Math.min(applied.discount, meal.price) : 0;
-  const subtotal = meal.price - discount;
-  const tax = subtotal * 0.0825;
-  const total = subtotal + tax;
-
-  // Previewed with the balance as it stands now; onPlace recomputes from the
-  // same function, so the receipt cannot disagree with what was shown here.
-  const earned = pointsForOrder({
-    carbon: meal.carbon,
-    savedKg: saved,
-    streak: rewards.streak,
-    lifetimePoints: rewards.lifetimePoints
-  });
-
-  if (receipt) {
+  if (placed) {
     return (
       <div className="checkout-page">
         <div className="confirm-card">
@@ -1821,34 +1217,12 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
             <div className="savings-label">CO₂e saved on this order</div>
           </div>
 
-          {receipt.tierUp && (
-            <div className="tier-up">
-              {receipt.tierUp.icon} You reached <strong>{receipt.tierUp.name}</strong> —{" "}
-              {receipt.tierUp.perk.toLowerCase()}.
-            </div>
-          )}
-
-          <PointsBreakdown earned={receipt.earned} title="Green Points earned" />
-
-          <div className="balance-line">
-            New balance <strong>{formatPoints(receipt.balance)} pts</strong>
-            {receipt.spent > 0 && (
-              <span className="balance-spent"> · {formatPoints(receipt.spent)} pts spent on your discount</span>
-            )}
-          </div>
-
           <p className="confirm-equiv">
             That is roughly <strong>{milesDrivenEquivalent(saved)} miles</strong> of driving avoided,
-            by choosing {meal.name} over {original.name}
-            {travelCost > 0
-              ? ` — after subtracting the ${travelCost.toFixed(1)} kg it took to collect it.`
-              : "."}
+            just by choosing {meal.name} over {original.name}.
           </p>
 
-          <div className="confirm-actions">
-            <button className="btn btn-primary" onClick={onDone}>Start a new search</button>
-            <button className="btn btn-secondary" onClick={onOpenRewards}>View rewards</button>
-          </div>
+          <button className="btn btn-primary" onClick={onDone}>Start a new search</button>
         </div>
       </div>
     );
@@ -1873,22 +1247,9 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
           <div className="order-line">
             <div>
               <div className="order-name">Pickup</div>
-              <div className="order-sub">
-                {restaurant.name} • {restaurant.distance} mi away
-                {travel ? ` • by ${travel.label.toLowerCase()}` : ""}
-              </div>
+              <div className="order-sub">{restaurant.name} • {restaurant.distance} mi away</div>
             </div>
             <span className="order-sub">~20 min</span>
-          </div>
-        )}
-
-        {discount > 0 && (
-          <div className="order-line">
-            <div>
-              <div className="order-name order-name-discount">{applied.name} reward</div>
-              <div className="order-sub">{formatPoints(applied.cost)} pts</div>
-            </div>
-            <span className="price price-discount">−${discount.toFixed(2)}</span>
           </div>
         )}
 
@@ -1902,72 +1263,17 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
           <span className="price">${total.toFixed(2)}</span>
         </div>
 
-        <div className="reward-apply">
-          <div className="reward-apply-head">
-            <span>🎟️ Use Green Points</span>
-            <span className="reward-apply-balance">{formatPoints(rewards.points)} pts available</span>
-          </div>
-
-          <div className="reward-apply-options">
-            <button
-              type="button"
-              className={`reward-option ${!rewardId ? "active" : ""}`}
-              onClick={() => setRewardId(null)}
-            >
-              <span className="reward-option-name">No discount</span>
-              <span className="reward-option-cost">Keep your points</span>
-            </button>
-
-            {vouchers.map((reward) => {
-              const affordable = rewards.points >= reward.cost;
-              return (
-                <button
-                  key={reward.id}
-                  type="button"
-                  className={`reward-option ${rewardId === reward.id ? "active" : ""} ${affordable ? "" : "locked"}`}
-                  disabled={!affordable}
-                  onClick={() => setRewardId(reward.id)}
-                  title={affordable
-                    ? `Spend ${formatPoints(reward.cost)} pts for ${reward.name}`
-                    : `${formatPoints(reward.cost - rewards.points)} more points needed`}
-                >
-                  <span className="reward-option-name">{reward.name}</span>
-                  <span className="reward-option-cost">
-                    {affordable ? `${formatPoints(reward.cost)} pts` : `${formatPoints(reward.cost - rewards.points)} pts to go`}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {applied && discount < applied.discount && (
-            <div className="notice notice-info">
-              This order is only ${meal.price.toFixed(2)}, so just ${discount.toFixed(2)} of the{" "}
-              {applied.name} reward applies and the rest is not refunded — a smaller
-              voucher goes further here.
-            </div>
-          )}
-        </div>
-
         <div className="savings-banner">
           <div>
             <div className="savings-banner-value">−{saved.toFixed(1)} kg CO₂e</div>
             <div className="savings-banner-label">
-              {travelCost > 0
-                ? `${foodSaving.toFixed(1)} kg saved on food, ${travelCost.toFixed(1)} kg spent getting there`
-                : `versus ${original.name}`}
-              {" • "}≈{milesDrivenEquivalent(saved)} miles not driven
+              versus {original.name} • ≈{milesDrivenEquivalent(saved)} miles not driven
             </div>
           </div>
           <div className="leaf">🌍</div>
         </div>
 
-        <PointsBreakdown earned={earned} title="You will earn" />
-
-        <button
-          className="btn btn-primary btn-checkout"
-          onClick={() => setReceipt(onPlace({ meal, original, restaurant, reward: applied }))}
-        >
+        <button className="btn btn-primary btn-checkout" onClick={() => setPlaced(true)}>
           Place order • ${total.toFixed(2)}
         </button>
         <p className="demo-note">Demo checkout — no payment is processed.</p>
@@ -1976,297 +1282,16 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
   );
 }
 
-/* ---------------------------------------------------- rewards components -- */
-
-const formatPoints = (points) => Math.round(points || 0).toLocaleString();
-
-// The earn preview that rides along on every alternative card.
-function PointsPill({ points, muted }) {
-  return <span className={`points-pill ${muted ? "points-pill-muted" : ""}`}>+{formatPoints(points)} pts</span>;
-}
-
-function TierBar({ lifetimePoints, compact }) {
-  const tier = tierFor(lifetimePoints);
-  const next = nextTierFor(lifetimePoints);
-  const progress = tierProgress(lifetimePoints);
-
-  return (
-    <div className={`tier-bar ${compact ? "tier-bar-compact" : ""}`}>
-      <div className="tier-bar-track">
-        <div className="tier-bar-fill" style={{ width: `${progress}%` }} />
-      </div>
-      <div className="tier-bar-note">
-        {next
-          ? <span>{formatPoints(next.min - lifetimePoints)} pts to {next.icon} {next.name}</span>
-          : <span>Top tier — {tier.perk.toLowerCase()}</span>}
-      </div>
-    </div>
-  );
-}
-
-// Homepage entry point into the scheme. A first-time visitor sees the ladder
-// rather than a bare zero, so the feature explains itself before any order.
-function RewardsSummary({ rewards, onOpen }) {
-  const tier = tierFor(rewards.lifetimePoints);
-  const fresh = rewards.lifetimePoints === 0;
-
-  return (
-    <button type="button" className="rewards-summary" onClick={onOpen}>
-      <div className="rewards-summary-top">
-        <span className="rewards-summary-tier">{tier.icon} {tier.name}</span>
-        <span className="rewards-summary-points">{formatPoints(rewards.points)} pts</span>
-      </div>
-      <TierBar lifetimePoints={rewards.lifetimePoints} compact />
-      <div className="rewards-summary-cta">
-        {fresh
-          ? "Order a lower-carbon swap to start earning — the smaller the footprint, the bigger the payout."
-          : `${rewards.streak > 0 ? `🔥 ${rewards.streak}-order low-impact streak • ` : ""}View rewards →`}
-      </div>
-    </button>
-  );
-}
-
-// The same breakdown is the preview at checkout and the receipt after it, so
-// the numbers a person agreed to are the numbers they got.
-function PointsBreakdown({ earned, title }) {
-  return (
-    <div className="points-breakdown">
-      <div className="points-breakdown-title">{title}</div>
-      <div className="points-line">
-        <span>Low-footprint bonus</span>
-        <span>+{formatPoints(earned.footprint)}</span>
-      </div>
-      <div className="points-line">
-        <span>
-          Carbon saved
-          {earned.capped && (
-            <span className="points-line-note">
-              {" "}· first {MAX_SAVED_KG_COUNTED} kg of {earned.savedKg.toFixed(1)} counted
-            </span>
-          )}
-        </span>
-        <span>+{formatPoints(earned.savings)}</span>
-      </div>
-      {earned.streakMult > 1 && (
-        <div className="points-line points-line-mult">
-          <span>🔥 {earned.streak}-order streak</span>
-          <span>×{earned.streakMult.toFixed(2)}</span>
-        </div>
-      )}
-      {earned.tier.multiplier > 1 && (
-        <div className="points-line points-line-mult">
-          <span>{earned.tier.icon} {earned.tier.name} member</span>
-          <span>×{earned.tier.multiplier.toFixed(2)}</span>
-        </div>
-      )}
-      <div className="points-line points-line-total">
-        <span>Total</span>
-        <span>+{formatPoints(earned.total)} pts</span>
-      </div>
-    </div>
-  );
-}
-
-function RewardCard({ reward, balance, onRedeem }) {
-  const affordable = balance >= reward.cost;
-  const short = reward.cost - balance;
-
-  return (
-    <div className={`reward-card ${affordable ? "" : "reward-card-locked"}`}>
-      <div className="reward-icon">{reward.icon}</div>
-      <div className="reward-body">
-        <div className="reward-name">{reward.name}</div>
-        <div className="reward-detail">{reward.detail}</div>
-      </div>
-      <div className="reward-action">
-        <div className="reward-cost">{formatPoints(reward.cost)} pts</div>
-        {reward.discount > 0 ? (
-          <span className="reward-hint">
-            {affordable ? "Apply at checkout" : `${formatPoints(short)} pts to go`}
-          </span>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-small"
-            disabled={!affordable}
-            onClick={() => onRedeem(reward)}
-          >
-            {affordable ? "Redeem" : `${formatPoints(short)} pts to go`}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RewardsPage({ rewards, onBack, onRedeem }) {
-  const tier = tierFor(rewards.lifetimePoints);
-
-  // Earning and spending are one story, so they share one timeline.
-  const activity = [
-    ...rewards.orders.map((entry) => ({ ...entry, kind: "earn" })),
-    ...rewards.redemptions.map((entry) => ({ ...entry, kind: "spend" }))
-  ].sort((a, b) => b.at - a.at).slice(0, 10);
-
-  return (
-    <div className="rewards-page">
-      <button className="btn btn-back" onClick={onBack}>← Back</button>
-
-      <section className="panel rewards-hero">
-        <div className="panel-label">Green Points</div>
-        <div className="rewards-balance">{formatPoints(rewards.points)}</div>
-        <div className="rewards-balance-label">
-          points to spend • {formatPoints(rewards.lifetimePoints)} earned all time
-        </div>
-        <div className="rewards-tier-line">
-          <span className="chip chip-green">{tier.icon} {tier.name}</span>
-          <span className="rewards-tier-perk">{tier.perk}</span>
-        </div>
-        <TierBar lifetimePoints={rewards.lifetimePoints} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-header"><h3>🎁 Spend your points</h3></div>
-        <div className="reward-grid">
-          {REWARD_CATALOG.map((reward) => (
-            <RewardCard key={reward.id} reward={reward} balance={rewards.points} onRedeem={onRedeem} />
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header"><h3>📈 How points work</h3></div>
-        <ul className="points-rules">
-          <li>
-            <strong>The lower the footprint, the more you earn.</strong> Every kg
-            of CO₂e your meal comes in under {FOOTPRINT_CEILING.toFixed(1)} kg is
-            worth {POINTS_PER_KG_UNDER_CEILING} pts — a berry sorbet at 0.3 kg
-            pays {footprintPoints(0.3)}, a cheese dish at 2.2 kg pays {footprintPoints(2.2)},
-            and anything over {FOOTPRINT_CEILING.toFixed(1)} kg pays nothing at all.
-          </li>
-          <li>
-            <strong>Swapping down pays too.</strong> {POINTS_PER_KG_SAVED} pts for
-            every kg you avoid versus the dish you searched for, counted up to{" "}
-            {MAX_SAVED_KG_COUNTED} kg.
-          </li>
-          <li>
-            <strong>Streaks compound.</strong> Each consecutive low-impact order
-            adds {Math.round(STREAK_BONUS_PER_ORDER * 100)}% to the payout, up to
-            ×{MAX_STREAK_MULTIPLIER.toFixed(1)}. One medium-impact order resets it.
-          </li>
-          <li>
-            <strong>Tiers stick.</strong> Rank is set by points earned all time,
-            so spending your balance never costs you a tier.
-          </li>
-        </ul>
-
-        <div className="tier-ladder">
-          {TIERS.map((entry) => (
-            <div
-              key={entry.name}
-              className={`tier-rung ${entry.name === tier.name ? "active" : ""} ${rewards.lifetimePoints >= entry.min ? "reached" : ""}`}
-            >
-              <span className="tier-rung-icon">{entry.icon}</span>
-              <span className="tier-rung-name">{entry.name}</span>
-              <span className="tier-rung-min">{formatPoints(entry.min)} pts</span>
-              <span className="tier-rung-perk">{entry.perk}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header"><h3>🧾 Recent activity</h3></div>
-        {activity.length === 0 ? (
-          <p className="empty-note">
-            Nothing yet. Search for something, pick a lower-carbon swap and place
-            the order — the points land on the confirmation screen.
-          </p>
-        ) : (
-          <div className="activity-list">
-            {activity.map((entry, idx) => (
-              <div className="activity-row" key={`${entry.at}-${idx}`}>
-                <div className="activity-body">
-                  <div className="activity-name">
-                    {entry.kind === "earn" ? entry.name : `Redeemed ${entry.name}`}
-                  </div>
-                  <div className="activity-meta">
-                    {entry.kind === "earn"
-                      ? `${entry.savedKg.toFixed(1)} kg CO₂e saved vs ${entry.versus}${entry.venue ? ` • ${entry.venue}` : ""}`
-                      : "Spent from your balance"}
-                    {" • "}
-                    {new Date(entry.at).toLocaleDateString()}
-                  </div>
-                </div>
-                <div className={entry.kind === "earn" ? "activity-earn" : "activity-spend"}>
-                  {entry.kind === "earn" ? `+${formatPoints(entry.points)}` : `−${formatPoints(entry.cost)}`}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
 function App() {
   const [page, setPage] = useState("home");
   const [filters, setFilters] = useState({});
   const [order, setOrder] = useState(null);
-  const [rewards, setRewards] = useState(loadRewards);
-
-  // One writer for the ledger, so the balance on screen is always the balance
-  // on disk.
-  const updateRewards = (next) => setRewards(saveRewards(next));
-
-  // Returns the receipt synchronously. CheckoutPage renders the confirmation in
-  // the same click and cannot wait for a state update to come back around.
-  const placeOrder = ({ meal, original, restaurant, reward }) => {
-    const earned = pointsForOrder({
-      carbon: meal.carbon,
-      savedKg: original.carbon - meal.carbon,
-      streak: rewards.streak,
-      lifetimePoints: rewards.lifetimePoints
-    });
-    const before = tierFor(rewards.lifetimePoints);
-    const next = applyOrder(rewards, { meal, original, restaurant, reward, earned });
-    updateRewards(next);
-    const after = tierFor(next.lifetimePoints);
-
-    return {
-      earned,
-      balance: next.points,
-      spent: reward ? reward.cost : 0,
-      tierUp: after.name === before.name ? null : after
-    };
-  };
-
-  const redeemReward = (reward) => {
-    // The button is already disabled when you cannot afford it; this is the
-    // guard that keeps the balance honest if it is ever reached another way.
-    if (rewards.points < reward.cost) return;
-    updateRewards(applyRedemption(rewards, reward));
-  };
-
-  if (page === "rewards") {
-    return (
-      <div className="app">
-        <RewardsPage
-          rewards={rewards}
-          onRedeem={redeemReward}
-          onBack={() => setPage("home")}
-        />
-      </div>
-    );
-  }
 
   if (page === "results") {
     return (
       <div className="app">
         <ResultsPage
           filters={filters}
-          rewards={rewards}
           onBack={() => setPage("home")}
           onCheckout={(next) => { setOrder(next); setPage("checkout"); }}
         />
@@ -2279,13 +1304,8 @@ function App() {
       <div className="app">
         <CheckoutPage
           order={order}
-          rewards={rewards}
-          onPlace={placeOrder}
           onBack={() => setPage("results")}
           onDone={() => { setOrder(null); setPage("home"); }}
-          // Clearing the order matters: leaving a placed one behind would let
-          // "Back to results" walk into the review screen and charge it twice.
-          onOpenRewards={() => { setOrder(null); setPage("rewards"); }}
         />
       </div>
     );
@@ -2295,8 +1315,6 @@ function App() {
     <div className="app">
       <HomePage
         initial={filters}
-        rewards={rewards}
-        onOpenRewards={() => setPage("rewards")}
         onSearch={(next) => { setFilters(next); setPage("results"); }}
       />
     </div>

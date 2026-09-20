@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
-const { PlacesCache } = require('./places-cache');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -35,28 +34,6 @@ const PRICE_LEVEL_SYMBOLS = {
 // Remembers whether Places has ever answered, so we only print setup help once.
 let placesWarningShown = false;
 
-// Places returns photo *references*, not images: `places/ID/photos/REF`. The
-// bytes come from a second, separately billed call that needs the API key, so
-// the browser only ever gets the reference and asks /api/place-photo for it.
-// Attribution is not optional - Google requires it wherever the image is shown.
-function firstPhoto(photos) {
-  const photo = (photos || [])[0];
-  if (!photo || !photo.name) return null;
-  const author = (photo.authorAttributions || [])[0] || {};
-  return {
-    name: photo.name,
-    attribution: author.displayName || null,
-    attributionUrl: author.uri || null
-  };
-}
-
-// Set PLACES_CACHE=off in .env to force every search to hit Google — useful
-// when you have changed a placesQuery and want to see the real result.
-const placesCache = new PlacesCache({
-  enabled: String(process.env.PLACES_CACHE || '').toLowerCase() !== 'off',
-  ttlHours: process.env.PLACES_CACHE_TTL_HOURS
-});
-
 // No longer called by the UI — every alternative now resolves its own venue
 // through /api/alternatives-nearby. Kept because the README documents it.
 app.post('/api/restaurants', async (req, res) => {
@@ -85,8 +62,7 @@ app.post('/api/restaurants', async (req, res) => {
           'places.rating',
           'places.userRatingCount',
           'places.priceLevel',
-          'places.googleMapsUri',
-          'places.photos'
+          'places.googleMapsUri'
         ].join(',')
       },
       body: JSON.stringify({
@@ -128,7 +104,6 @@ app.post('/api/restaurants', async (req, res) => {
         reviewCount: place.userRatingCount || 0,
         priceLevel: PRICE_LEVEL_SYMBOLS[place.priceLevel] || null,
         mapsUrl: place.googleMapsUri || null,
-        photo: firstPhoto(place.photos),
         distance: calculateDistance(latitude, longitude, place.location.latitude, place.location.longitude)
       }))
       .filter((r) => r.distance <= miles * 1.5)
@@ -193,7 +168,6 @@ function buildFallbackRestaurants(latitude, longitude, foodType, miles) {
       reviewCount: 120 + idx * 37,
       priceLevel: seed.priceLevel,
       mapsUrl: null,
-      photo: null, // a sample venue has no real photo to show
       distance
     };
   }).sort((a, b) => a.distance - b.distance);
@@ -231,7 +205,6 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
         'places.userRatingCount',
         'places.priceLevel',
         'places.googleMapsUri',
-        'places.photos',
         // Enterprise + Atmosphere SKU. Drop this line to halve the bill and
         // fall back to category-only matching.
         'places.reviews'
@@ -261,7 +234,6 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
       reviewCount: place.userRatingCount || 0,
       priceLevel: PRICE_LEVEL_SYMBOLS[place.priceLevel] || null,
       mapsUrl: place.googleMapsUri || null,
-      photo: firstPhoto(place.photos),
       distance: calculateDistance(latitude, longitude, place.location.latitude, place.location.longitude),
       _reviews: (place.reviews || [])
         .map((r) => ({
@@ -276,20 +248,6 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
     .sort((a, b) => a.distance - b.distance);
 
   return { ok: true, status: 200, venues };
-}
-
-// Only successful searches are cached. A failure must stay a failure, so that
-// a key with Places disabled keeps showing the setup help instead of silently
-// pinning an empty result for the next six hours.
-async function cachedPlacesSearch(textQuery, latitude, longitude, miles, maxDistanceFactor) {
-  const key = placesCache.keyFor(textQuery, latitude, longitude, miles, maxDistanceFactor);
-
-  const cached = placesCache.get(key);
-  if (cached) return { ok: true, status: 200, venues: cached, cached: true };
-
-  const result = await placesSearch(textQuery, latitude, longitude, miles, maxDistanceFactor);
-  if (result.ok) placesCache.set(key, result.venues);
-  return result;
 }
 
 // Placeholder venues used ONLY when the Places call itself failed. They are
@@ -318,7 +276,6 @@ function buildFallbackVenues(key, label, latitude, longitude, miles) {
     reviewCount: 90 + (hash % 200),
     priceLevel: ['$', '$$'][hash % 2],
     mapsUrl: null,
-    photo: null, // a sample venue has no real photo to show
     distance: Math.min(distance, miles)
   }];
 }
@@ -441,12 +398,11 @@ app.post('/api/alternatives-nearby', async (req, res) => {
 
   // allSettled: one query failing must not blank the other cards.
   const settled = await Promise.allSettled(
-    capped.map((q) => cachedPlacesSearch(q.query, latitude, longitude, miles, 2))
+    capped.map((q) => placesSearch(q.query, latitude, longitude, miles, 2))
   );
 
   const results = {};
   let failed = 0;
-  let servedFromCache = 0;
 
   capped.forEach((q, i) => {
     const outcome = settled[i];
@@ -454,8 +410,6 @@ app.post('/api/alternatives-nearby', async (req, res) => {
     // A successful search that found nothing is a real answer: not available.
     // Only a failed CALL falls back to a placeholder.
     if (outcome.status === 'fulfilled' && outcome.value.ok) {
-      if (outcome.value.cached) servedFromCache += 1;
-
       const scored = outcome.value.venues.map((venue) => {
         const evidence = findDishEvidence(venue, q.dishTerms);
         const { _reviews, ...rest } = venue; // never ship the raw reviews
@@ -483,17 +437,8 @@ app.post('/api/alternatives-nearby', async (req, res) => {
     };
   });
 
-  // Dish evidence is recomputed on every request rather than cached alongside
-  // the venues, so editing `dishTerms` in app.js takes effect on the next
-  // reload without spending a Places call to see it.
-  console.log(
-    `alternatives-nearby: ${capped.length} quer${capped.length === 1 ? 'y' : 'ies'}, ` +
-    `${servedFromCache} from cache, ${capped.length - servedFromCache - failed} billed, ${failed} failed`
-  );
-
   res.json({
     success: true,
-    cache: { served: servedFromCache, of: capped.length },
     source: failed === 0 ? 'google' : failed === capped.length ? 'fallback' : 'mixed',
     notice: failed === 0
       ? null
@@ -504,184 +449,10 @@ app.post('/api/alternatives-nearby', async (req, res) => {
   });
 });
 
-/* --------------------------------------------------------- place photos --- */
-
-// Photo names are Google-issued and go straight into an upstream URL, so they
-// are matched against the documented shape rather than trusted - anything else
-// would let a caller point this proxy wherever it liked.
-const PHOTO_NAME_PATTERN = /^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/;
-
-// Proxied rather than handed to the browser as a URL, because the media call
-// carries GOOGLE_PLACES_API_KEY and that key is also on the priciest Places
-// tier. Every hit here is a billable Place Photos request - the day-long
-// Cache-Control is what keeps a demo from paying for the same image repeatedly.
-app.get('/api/place-photo', async (req, res) => {
-  const name = String(req.query.name || '');
-  if (!PHOTO_NAME_PATTERN.test(name)) {
-    return res.status(400).json({ error: 'Invalid photo name' });
-  }
-
-  // Google accepts 1-4800; 400px is plenty for a card thumbnail.
-  const maxWidth = Math.min(Math.max(parseInt(req.query.maxWidth, 10) || 400, 1), 4800);
-  const url = `https://places.googleapis.com/v1/${name}/media` +
-    `?maxWidthPx=${maxWidth}&key=${GOOGLE_PLACES_API_KEY}`;
-
-  try {
-    const upstream = await fetch(url);
-    if (!upstream.ok) {
-      logPlacesProblem(upstream.status, await upstream.text());
-      // The <img> onError handler swaps in a placeholder tile.
-      return res.status(502).end();
-    }
-
-    const body = Buffer.from(await upstream.arrayBuffer());
-    res.set('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.send(body);
-  } catch (error) {
-    logPlacesProblem('network', error.message);
-    res.status(502).end();
-  }
-});
-
-/* ---------------------------------------------------------- food photos --- */
-
-// Pexels needs a free API key, sent as a bare Authorization header - no
-// "Bearer" prefix. Missing key is not fatal: the cards fall back to a plain
-// tile, like every other degradation here.
-const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
-
-if (!PEXELS_API_KEY) {
-  console.warn('NOTE: PEXELS_API_KEY not set — alternative cards will show a placeholder tile instead of a photo.');
-}
-
-// Searching the bare dish name pulls in styled product shots and the odd
-// unrelated scene; " food" biases hard towards a plated dish. This is the knob
-// to turn if a particular card gets a photo that looks nothing like the dish.
-const PHOTO_QUERY_SUFFIX = ' food';
-
-// Holds successes AND honest "nothing matched" answers, so a repeated search
-// costs nothing - but never a transport error or a rate-limit blip, or one bad
-// minute would blank that food until the server restarted.
-const foodPhotoCache = new Map();
-
-// Printed at most once: a rejected key looks exactly like a quiet feature until
-// someone reads the logs.
-let photoKeyWarningShown = false;
-
-function photoQuery(foodName) {
-  return String(foodName || '')
-    .replace(/&/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim() + PHOTO_QUERY_SUFFIX;
-}
-
-async function fetchFoodPhoto(foodName) {
-  const key = photoQuery(foodName).toLowerCase();
-  if (foodPhotoCache.has(key)) return foodPhotoCache.get(key);
-  if (!PEXELS_API_KEY) return { ok: false, reason: 'no-key' };
-
-  const url = 'https://api.pexels.com/v1/search' +
-    `?query=${encodeURIComponent(photoQuery(foodName))}` +
-    '&per_page=1&orientation=landscape';
-
-  // Bare key, no scheme prefix - that is what Pexels expects.
-  const response = await fetch(url, { headers: { Authorization: PEXELS_API_KEY } });
-
-  if (!response.ok) {
-    const reason = response.status === 429
-      ? 'rate-limited'
-      : (response.status === 401 || response.status === 403) ? 'bad-key' : 'error';
-
-    console.error(`Pexels search failed (${response.status}) for "${foodName}"`);
-    if (reason === 'bad-key' && !photoKeyWarningShown) {
-      photoKeyWarningShown = true;
-      console.error('\n  ACTION NEEDED: Pexels rejected PEXELS_API_KEY — check server/.env');
-      console.error('  https://www.pexels.com/api/  Cards show placeholder tiles until then.\n');
-    }
-    return { ok: false, reason }; // deliberately not cached
-  }
-
-  const data = await response.json();
-  const photo = (data.photos || [])[0];
-  if (!photo) {
-    const miss = { ok: false, reason: 'no-match' };
-    foodPhotoCache.set(key, miss);
-    return miss;
-  }
-
-  // Hotlinked straight from images.pexels.com: those requests need no key and
-  // do not count against the API quota. Sizing params on the original get
-  // exactly the crop a card needs instead of shipping a 4000px original.
-  const image = new URL(photo.src.original);
-  image.searchParams.set('auto', 'compress');
-  image.searchParams.set('cs', 'tinysrgb');
-  image.searchParams.set('fit', 'crop');
-  image.searchParams.set('w', '400');
-  image.searchParams.set('h', '260');
-
-  // Provider-neutral shape: the card renders "Photo: <photographer> on
-  // <source>", so swapping provider again stays a server-side change.
-  const result = {
-    ok: true,
-    url: image.toString(),
-    alt: photo.alt || foodName,
-    photographer: photo.photographer || 'Pexels',
-    photographerUrl: photo.photographer_url || 'https://www.pexels.com/',
-    source: 'Pexels',
-    // Pexels asks for a prominent link back; the photo's own page is the one
-    // they prefer.
-    sourceUrl: photo.url || 'https://www.pexels.com/'
-  };
-
-  foodPhotoCache.set(key, result);
-  return result;
-}
-
-// One round trip for the whole card grid instead of one per card, so a slow
-// photo provider costs the page one wait rather than eight.
-app.post('/api/food-photos', async (req, res) => {
-  const { names } = req.body;
-
-  if (!Array.isArray(names) || names.length === 0) {
-    return res.status(400).json({ error: 'names[] required' });
-  }
-
-  const capped = names.slice(0, 8).map(String);
-  const settled = await Promise.allSettled(capped.map((name) => fetchFoodPhoto(name)));
-
-  const photos = {};
-  capped.forEach((name, i) => {
-    const outcome = settled[i];
-    photos[name] = outcome.status === 'fulfilled'
-      ? outcome.value
-      : { ok: false, reason: 'error' };
-  });
-
-  res.json({
-    success: true,
-    configured: Boolean(PEXELS_API_KEY),
-    photos
-  });
-});
-
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'Backend is running', placesCache: placesCache.summary() });
+  res.json({ status: 'Backend is running' });
 });
 
 app.listen(PORT, () => {
   console.log(`SustainEat backend running on http://localhost:${PORT}`);
-  const cache = placesCache.summary();
-  console.log(cache.enabled
-    ? `Places cache on — ${cache.entries} entries, ${cache.ttlHours}h TTL (PLACES_CACHE=off to disable)`
-    : 'Places cache OFF — every search will be billed');
 });
-
-// Debounced writes mean the last few searches may not be on disk yet. Flush on
-// the way out so a Ctrl+C between rehearsals does not throw them away.
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    placesCache.flush();
-    process.exit(0);
-  });
-}

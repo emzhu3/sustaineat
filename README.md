@@ -33,6 +33,13 @@ The backend serves the frontend too, so that is the only command you need.
 > hackathon key with the free monthly credit; **do not leave this key live on a
 > public URL.** To revert: delete `'places.reviews'` from the field mask in
 > `server/server.js`. Everything still works, just without dish verification.
+>
+> Venue photos add a second, separate charge: every image the browser loads is
+> one **Place Photos** request. `/api/place-photo` sends
+> `Cache-Control: public, max-age=86400`, so a reloaded demo re-uses the
+> browser's copy instead of paying again. To revert: delete `'places.photos'`
+> from both field masks in `server/server.js` — the cards fall back to their
+> plain tiles.
 
 ### 1. Places API — done ✅
 
@@ -69,16 +76,43 @@ source. That is fine for a demo — a USDA key is free and only gates rate limit
 — but do not reuse the pattern for a secret that matters. Those belong in
 `server/.env`, like the Google key.
 
+### 4. Pexels key — done ✅
+
+Each alternative card shows a photo of the dish, searched on Pexels by food
+name. The key is in `server/.env` as `PEXELS_API_KEY` and is returning live
+photos. Get a replacement free at https://www.pexels.com/api/ if it ever needs
+rotating.
+
+The key is optional in the sense that nothing crashes without it: those cards
+fall back to a plain placeholder tile and the server says so once at start-up.
+A key Pexels *rejects* is called out loudly in the log rather than failing
+quietly.
+
+> **Quota.** Pexels answers with its own limits in the response headers — this
+> key reports **25,000 requests, resetting monthly** (next reset 2026-10-20),
+> with one request per distinct food. Their docs also quote a 200/hour ceiling
+> for free keys, which the headers do not surface. Either way there is a lot of
+> room: the server caches every answer by food name for its lifetime, so
+> repeating a search costs nothing.
+>
+> Loading the images themselves is free and unmetered: they are hotlinked
+> straight from `images.pexels.com`, which needs no key at all.
+
+> **This used to be Unsplash.** Swapped on 2026-09-20 because Unsplash was
+> unreachable. Pexels is the simpler dependency of the two — a bare
+> `Authorization: <key>` header, no UTM parameters, and no download-ping
+> callback to fire. `verification/*.pre-pexels.bak` has the previous version.
+
 ## How it fits together
 
 | File | Role |
 | --- | --- |
 | `index.html` | Entry point, loads React + Babel from CDN, and the Google Maps JS API |
-| `app.js` | Whole frontend: search, results, map, checkout |
+| `app.js` | Whole frontend: search, results, map, checkout, Green Points |
 | `styles.css` | Cream / soft-green theme, all component styles |
-| `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel |
+| `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel; `GET /api/place-photo` proxies venue images; `POST /api/food-photos` looks up dish photos on Pexels |
 | `server/places-cache.js` | Disk-backed cache for Places responses, so repeat searches are free and offline-safe |
-| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PORT`, and optionally `PLACES_CACHE` / `PLACES_CACHE_TTL_HOURS` (gitignored) |
+| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PEXELS_API_KEY`,, `PORT`, and optionally `PLACES_CACHE` / `PLACES_CACHE_TTL_HOURS` (gitignored) |
 
 ### Food formats
 
@@ -171,6 +205,56 @@ dies**.
 Two `.env` knobs: `PLACES_CACHE=off` forces every search to hit Google (use
 after editing a `placesQuery`), and `PLACES_CACHE_TTL_HOURS` overrides the TTL.
 
+### Green Points
+
+Ordering a swap pays out points, and the **lower the footprint, the more you
+get**. Two earners, both continuous, so there is no cliff where one more gram of
+CO₂e costs you a whole tier:
+
+| Earner | Rule |
+| --- | --- |
+| Low-footprint bonus | 15 pts per kg the meal comes in **under 8.0 kg CO₂e** |
+| Carbon saved | 25 pts per kg avoided versus what you searched for, counted up to 12 kg |
+| Streak | ×1.1 per consecutive *low*-impact order, capped at ×1.5. One medium-impact order resets it |
+| Tier | ×1.0 to ×1.2, by points earned all time |
+
+The 8.0 kg ceiling is deliberate: beef sits at 8.5 and lamb at 20, so the
+meat-heavy end of the catalog earns nothing from its own footprint and has to
+rely on the saving. A berry sorbet at 0.3 kg earns the near-full 116.
+
+The 12 kg cap on savings stops a single lamb-to-sorbet swap paying out ~490
+points and making every order after it feel pointless. When the cap binds, the
+receipt says so (*first 12 kg of 19.5 counted*) rather than silently disagreeing
+with the "19.5 kg saved" figure above it.
+
+Points buy **discounts at checkout** ($2 / $5 / $10 / $20 off) and **perks**
+redeemed from the rewards page (a plant-milk upgrade, a tree planted). Tiers —
+Seedling, Sprout, Sapling, Canopy, Old Growth — are earned on *lifetime* points,
+so spending your balance never demotes you.
+
+Two rules the arithmetic depends on:
+
+- **One formula.** `pointsForOrder` is the only place points are computed, so
+  the `+301 pts` on a results card, the checkout preview and the receipt cannot
+  drift apart.
+- **Spend before earn.** `applyOrder` deducts the voucher first and pays out
+  second, so an order can never be bought with the points it is about to
+  generate.
+
+The ledger lives in `localStorage` under `sustaineat.rewards.v1` — no account,
+no backend. Every read is re-derived field by field, so a corrupt or hand-edited
+entry costs you history rather than rendering `NaN pts` for the rest of the
+demo, and a private window that throws on storage still works in memory.
+
+> Because it is per-browser, clearing site data resets the balance. To demo a
+> full ladder without placing a dozen orders, set the key by hand in the
+> console:
+> ```js
+> localStorage.setItem("sustaineat.rewards.v1", JSON.stringify({
+>   points: 1820, lifetimePoints: 5240, streak: 3, orders: [], redemptions: []
+> }));
+> ```
+
 ### Data sources
 
 - **Nutrition** — USDA FoodData Central. Values are per 100g, scaled to a real
@@ -183,6 +267,23 @@ after editing a `placesQuery`), and `PLACES_CACHE_TTL_HOURS` overrides the TTL.
   nearby actually sells that kind of thing. The search phrase for each catalog
   item is its `placesQuery` field in `app.js` — that is the knob to tune if
   something reports "not available nearby" too often.
+- **Venue photos** — Google Places, `places.photos` in the same search that
+  already fetches the venue. Places returns a photo *reference*, not an image,
+  and the image call needs the API key — so the browser only ever gets the
+  reference and asks the backend's `/api/place-photo` for the bytes. The key
+  never leaves the server. Google's author attribution is printed under each
+  thumbnail, which their terms require.
+- **Dish photos** — Pexels `GET /v1/search`, one lookup per alternative,
+  batched into a single `POST /api/food-photos` call from the page. The search
+  phrase is the food's name plus `PHOTO_QUERY_SUFFIX` in `server/server.js`
+  (` food` — it biases hard towards a plated dish rather than a styled product
+  shot). That constant is the knob to turn if a card gets a photo that looks
+  nothing like the dish, the way `placesQuery` is the knob for venues. Stock
+  search is approximate by nature: "Black Bean Burger" can return a generic
+  burger. The card is honest about this — it credits the photographer and links
+  the source, and never claims the photo is of that restaurant's dish.
+  The response the page receives is provider-neutral (`source`, `sourceUrl`),
+  so swapping photo provider again is a server-side change only.
 - **Dish evidence** — each place's Google reviews are searched for the dish
   itself (`dishTerms` in `app.js`: "cashew cheesecake", "vegan cheesecake",
   "cheesecake"). A hit gets the confident wording, *Reviewers mention
@@ -202,8 +303,16 @@ never dies on stage:
   "Sample location", never a real-looking pickup point.
 - A search that legitimately finds nothing → that option is labelled
   "Not available nearby", greyed out and cannot be ordered.
+- No `PEXELS_API_KEY`, a key Pexels rejects, nothing matched, or the quota hit →
+  that card shows a plain placeholder tile. A rate-limit blip is never cached,
+  so the photo comes back on the next search rather than staying blank until
+  restart. A rejected key also prints an ACTION NEEDED line, once.
+- A venue has no photo, or the Place Photos call fails → the row shows its text
+  only, never a broken image.
 - USDA rate-limited or no match → estimated nutrition for that food.
 - Backend not running → the results page says exactly how to start it.
+- `localStorage` blocked, full or corrupt → the points balance starts from zero
+  for the session instead of throwing; nothing else on the page changes.
 
 ## Demo path that shows the most
 
@@ -213,10 +322,12 @@ never dies on stage:
 3. Cards where a real review names the dish read *Reviewers mention "veggie
    burger" at Audubon*; the rest fall back to *Indian restaurant nearby — …*.
    Selecting a verified one quotes the review underneath.
-4. Every alternative card names the shop you can collect it from, and
+4. Every card carries a photo of the dish and every shop row a photo of the
+   shop, both credited to their source.
+5. Every alternative card names the shop you can collect it from, and
    **Where to get them** maps those shops (grouped, so one shop serving two
    options is one pin).
-5. Pick an alternative → **Proceed to Checkout** → **Place order**. The pickup
+6. Pick an alternative → **Proceed to Checkout** → **Place order**. The pickup
    location on the receipt is the venue from the card you chose, and the CO₂e
    on it is net of the trip to collect it.
 6. Point at the notice reading *2 options hidden for giving you substantially
@@ -231,3 +342,7 @@ never dies on stage:
 > Before presenting, run your demo searches once with the backend up. That
 > fills the Places cache, so on stage every search is instant, free, and
 > independent of the venue wifi.
+6. The confirmation pays out **Green Points** with the arithmetic shown — and
+   the lower-carbon cards on the way in were already labelled with what each
+   would earn. Place a second order and the **$2 off** reward unlocks; applying
+   it drops the total on the spot and the receipt shows the new balance.
