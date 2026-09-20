@@ -12,9 +12,14 @@ const BACKEND_URL =
     ? "http://localhost:5000"
     : window.location.origin;
 
-// Personal FoodData Central key (1,000 requests/hour), not the shared DEMO_KEY,
-// which caps at ~30/hour per IP and would 429 mid-demo.
-const USDA_API_KEY = "ZyIaPodUFlDF7L6J2HO1Tx9zHo2n9jI4R3zP13WW";
+// Personal FoodData Central key (X-Ratelimit-Limit reports 3,600/hour), not the
+// shared DEMO_KEY, which caps at ~30/hour per IP and would 429 mid-demo.
+//
+// app.js is served to the browser, so this key is public to every visitor by
+// design of where it lives -- not a leak to fix by moving it, but a reason not
+// to grant it anything that matters. The keys that do matter (Places, Pexels)
+// stay server-side in server/.env and are never shipped.
+const USDA_API_KEY = "fmPz0LC8GXJURmsmkrocv03emrb344PmgAkzT68B";
 
 // Used only if the browser blocks or times out geolocation, so a denied
 // permission prompt on demo day still produces a working results page.
