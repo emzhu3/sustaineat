@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SustainEat — Eat well, emit less</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+
+    <script>
+      // Three ways to end up on the built-in map, one way to get the real one.
+      window.__gmapsState = "loading";
+      window.__gmapsWaiters = [];
+      function __gmapsNotify(state) {
+        window.__gmapsState = state;
+        (window.__gmapsWaiters || []).forEach(function (fn) {
+          try { fn(state); } catch (e) { /* a dead subscriber must not block the rest */ }
+        });
+      }
+      function initGoogleMaps() {
+        if (window.__gmapsState === "loading") __gmapsNotify("ready");
+      }
+      // Fires for an un-enabled API, a bad key or a blocked referrer — and it
+      // can arrive after initGoogleMaps has already said "ready".
+      window.gm_authFailure = function () { __gmapsNotify("failed"); };
+      function __gmapsScriptError() {
+        if (window.__gmapsState === "loading") __gmapsNotify("failed");
+      }
+    </script>
+    <script async
+      src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDhlEi5U1L05L04jZUXY4__voBZT25ByMw&callback=initGoogleMaps&loading=async"
+      onerror="__gmapsScriptError()"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel" src="app.js"></script>
+</body>
+</html>

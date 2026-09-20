@@ -1,0 +1,98 @@
+# SustainEat
+
+Search a food, see its nutrition and carbon footprint, get lower-carbon
+alternatives that respect your diet and budget, and find real restaurants nearby.
+
+## Running it
+
+```bash
+cd server
+npm install
+npm start
+```
+
+Then open **http://localhost:5000**
+
+The backend serves the frontend too, so that is the only command you need.
+
+> Do not open `index.html` by double-clicking it. Babel fetches `app.js` over
+> XHR, which `file://` blocks, and geolocation requires a secure context — you
+> would get a blank page. Always go through `http://localhost:5000`.
+
+## Two keys you need to set up
+
+### 1. Enable the Google Places API  (restaurants are sample data until you do)
+
+The key in `server/.env` is valid, but its project has **Places API (New)**
+disabled, so every request returns 403 and the app falls back to sample
+restaurants.
+
+1. https://console.cloud.google.com/apis/library/places.googleapis.com?project=739001161925
+2. Click **Enable**, and make sure billing is on for the project.
+3. Restart the server. Nothing else to change — it switches to live data
+   automatically (the response `source` field flips from `fallback` to `google`).
+
+### 2. USDA key — done ✅
+
+`app.js` uses a personal FoodData Central key (1,000 requests/hour), not the
+shared `DEMO_KEY` that caps at ~30/hour per IP. Nothing to do here.
+
+Note that `app.js` is served to the browser, so this key is visible in page
+source. That is fine for a demo — a USDA key is free and only gates rate limits
+— but do not reuse the pattern for a secret that matters. Those belong in
+`server/.env`, like the Google key.
+
+## How it fits together
+
+| File | Role |
+| --- | --- |
+| `index.html` | Entry point, loads React + Babel from CDN |
+| `app.js` | Whole frontend: search, results, map, checkout |
+| `styles.css` | Cream / soft-green theme, all component styles |
+| `server/server.js` | Express: serves the frontend, proxies Google Places |
+| `server/.env` | `GOOGLE_PLACES_API_KEY` and `PORT` (gitignored) |
+
+### Food formats
+
+A swap is only useful if it is the same *kind* of thing, so every search is
+classified into a format — `main`, `dessert`, `breakfast`, `soup`, `drink` —
+and alternatives are drawn only from that format. Searching "cheesecake"
+returns sorbet and cashew cheesecake, not a lentil bowl.
+
+Two ordering rules in `app.js` are load-bearing; read the comments before
+reordering `INGREDIENT_RULES` or `FORMAT_OVERRIDES`:
+
+- **Rule order.** `cheese` precedes `pastry` so "cheesecake" is dairy, not
+  generic baking. `pastry` precedes `nuts` so "doughnut" is not a nut dish.
+  `nuts` precedes `dairy` so "peanut butter" is not butter.
+- **Word boundaries.** Terms of four characters or fewer only match on a word
+  boundary, because plain substring matching silently mis-fires: "chocolate"
+  contains "cola", "steak" contains "tea", "eggplant" contains "egg". Longer
+  terms stay substrings so compounds like "cheesecake" still match "cheese".
+
+### Data sources
+
+- **Nutrition** — USDA FoodData Central. Values are per 100g, scaled to a real
+  portion using the `foodMeasures` gram weight when available.
+- **Carbon** — per-serving kg CO₂e derived from Poore & Nemecek (2018).
+- **Driving equivalent** — EPA figure of ~404 g CO₂ per mile.
+- **Restaurants** — Google Places API (New), `places:searchText`, biased to your
+  location and filtered to your chosen radius.
+
+### Things that degrade instead of breaking
+
+Each of these shows a visible notice rather than an error screen, so a demo
+never dies on stage:
+
+- Location denied or slow → falls back to MIT campus coordinates (8s timeout).
+- Places API down or disabled → sample restaurants around your real position.
+- USDA rate-limited or no match → estimated nutrition for that food.
+- Backend not running → the results page says exactly how to start it.
+
+## Demo path that shows the most
+
+1. Search **beef burger** with diet **None** — high-impact badge, 8.5 kg CO₂e.
+2. Switch diet to **Vegan** and search again — alternatives change to
+   plant-based only.
+3. Pick an alternative → **Proceed to Checkout** → **Place order** for the
+   CO₂-saved confirmation screen.
