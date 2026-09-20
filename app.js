@@ -1494,7 +1494,8 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
               const photo = foodPhotos[alt.name];
               const earn = pointsForOrder({
                 carbon: alt.carbon,
-                savedKg: saved,
+                // Net, not food-only, so this preview matches what CheckoutPage awards.
+                savedKg: alt.netSaving,
                 streak: rewards.streak,
                 lifetimePoints: rewards.lifetimePoints
               });
