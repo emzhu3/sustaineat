@@ -177,6 +177,86 @@ function milesDrivenEquivalent(kgCO2) {
   return Math.round(kgCO2 * 2.48 * 10) / 10;
 }
 
+/* ------------------------------------------------------ travel to food ---- */
+
+// Collecting a swap is not free. Driving four miles for a lower-carbon dessert
+// can emit more than the swap saves, and a tool that only ever shows the
+// flattering half of that arithmetic is marketing, not measurement.
+//
+// Car is the same EPA 404 g/mile figure used above. Transit is ~0.18 kg CO2e
+// per passenger-mile, typical for US bus service. Walking and cycling count as
+// zero — the marginal emissions of moving your own body a mile are real but
+// far below the resolution of every other number on this page.
+const TRAVEL_MODES = [
+  { id: "drive", label: "Drive", verb: "Driving", icon: "🚗", kgPerMile: 0.404 },
+  { id: "transit", label: "Transit", verb: "Taking transit", icon: "🚌", kgPerMile: 0.18 },
+  { id: "bike", label: "Bike", verb: "Cycling", icon: "🚲", kgPerMile: 0 },
+  { id: "walk", label: "Walk", verb: "Walking", icon: "🚶", kgPerMile: 0 }
+];
+
+function travelModeById(id) {
+  return TRAVEL_MODES.find((mode) => mode.id === id) || TRAVEL_MODES[0];
+}
+
+// Round trip, because you have to get home again. Venue distance is the
+// straight-line haversine the backend computes, so real road distance is
+// always higher — this figure understates the true cost rather than inflating
+// the saving.
+function travelEmissions(distanceMiles, modeId) {
+  return (Number(distanceMiles) || 0) * 2 * travelModeById(modeId).kgPerMile;
+}
+
+/* -------------------------------------------------- nutrition guardrail --- */
+
+// "Eat less" is the trivially correct answer to any carbon question, and a
+// recommender with no guard against it will cheerfully swap a burger for a cup
+// of tea and call it a 7 kg saving. A swap is only honest if what you get is
+// still the same kind of meal.
+//
+// Which nutrient decides that depends on the format. For a main, a breakfast
+// or a soup, protein is the point — losing it means the swap did not feed you.
+// Nobody eats dessert or drinks a latte for the protein, so there the floor
+// goes on calories instead, which is what catches the milkshake-for-tea swap.
+const PROTEIN_FORMATS = new Set(["main", "breakfast", "soup"]);
+const MIN_PROTEIN_RATIO = 0.6;
+const MIN_CALORIE_RATIO = 0.4;
+
+function nutritionFit(original, item) {
+  const usesProtein = PROTEIN_FORMATS.has(item.format);
+  const basis = usesProtein ? "protein" : "calories";
+  const originalValue = usesProtein ? original.protein : original.calories;
+  const itemValue = usesProtein ? item.protein : item.calories;
+
+  // With nothing credible to compare against, do not invent a verdict — an
+  // unfounded "comparable protein" badge is worse than no badge at all.
+  if (!originalValue || originalValue <= 0) {
+    return { comparable: true, basis: null };
+  }
+
+  const ratio = itemValue / originalValue;
+  return {
+    comparable: ratio >= (usesProtein ? MIN_PROTEIN_RATIO : MIN_CALORIE_RATIO),
+    basis,
+    ratio,
+    original: originalValue,
+    value: itemValue
+  };
+}
+
+// "substantially less calories" is wrong; the basis key cannot be dropped
+// straight into a sentence.
+const FIT_SHORTFALL = { protein: "less protein", calories: "fewer calories" };
+
+function nutritionFitLabel(fit) {
+  if (!fit || !fit.basis) return null;
+  const mine = Math.round(fit.value);
+  const theirs = Math.round(fit.original);
+  const amounts = fit.basis === "protein" ? `${mine}g vs ${theirs}g` : `${mine} vs ${theirs} cal`;
+  return fit.comparable
+    ? `Comparable ${fit.basis} — ${amounts}`
+    : `${Math.round(fit.ratio * 100)}% the ${fit.basis} — ${amounts}`;
+}
+
 function titleCase(text) {
   return (text || "").replace(/\w\S*/g, (word) => (/[a-z]/.test(word) ? word : word[0] + word.slice(1).toLowerCase()));
 }
@@ -416,25 +496,45 @@ function generateAlternatives(original, { diet, budget, query }) {
       // Nudge toward the same dish the user asked for, but keep the bonus small
       // enough that it cannot outrank a substantially lower-carbon option.
       const relevance = words.some((word) => name.includes(word)) ? 2 : 0;
-      return { ...item, rankScore: (originalCarbon - item.carbon) * 3 + relevance };
+      return {
+        ...item,
+        fit: nutritionFit(original, item),
+        rankScore: (originalCarbon - item.carbon) * 3 + relevance
+      };
     })
-    .sort((a, b) => b.rankScore - a.rankScore);
+    // A nutritionally comparable swap outranks a lower-carbon one that leaves
+    // you hungry, however big the carbon number on it looks.
+    .sort((a, b) => Number(b.fit.comparable) - Number(a.fit.comparable) || b.rankScore - a.rankScore);
 
   // Vary the ingredient so the list is not three near-identical bean bowls.
-  const picked = [];
-  const usedIngredients = new Set();
-  for (const item of candidates) {
-    if (usedIngredients.has(item.ingredient)) continue;
-    usedIngredients.add(item.ingredient);
-    picked.push(item);
-    if (picked.length === 3) break;
-  }
-  for (const item of candidates) {
-    if (picked.length === 3) break;
-    if (!picked.includes(item)) picked.push(item);
-  }
+  const take = (pool, limit) => {
+    const chosen = [];
+    const usedIngredients = new Set();
+    for (const item of pool) {
+      if (usedIngredients.has(item.ingredient)) continue;
+      usedIngredients.add(item.ingredient);
+      chosen.push(item);
+      if (chosen.length === limit) break;
+    }
+    for (const item of pool) {
+      if (chosen.length === limit) break;
+      if (!chosen.includes(item)) chosen.push(item);
+    }
+    return chosen;
+  };
 
-  return picked.map((item, idx) => ({
+  const comparable = candidates.filter((item) => item.fit.comparable);
+  const flagged = candidates.filter((item) => !item.fit.comparable);
+
+  const picked = take(comparable, 3);
+
+  // Carry a couple of the flagged options too, even though they are hidden by
+  // default. These are exactly what a carbon-only recommender would have put
+  // at the top — a 5 kcal tea "beating" a milkshake — so keeping them, hidden
+  // and labelled, is what makes the guardrail visible instead of silent.
+  const extras = take(flagged, picked.length ? 2 : 3);
+
+  return [...picked, ...extras].map((item, idx) => ({
     id: idx + 2,
     name: item.name,
     ingredient: item.ingredient,
@@ -447,6 +547,7 @@ function generateAlternatives(original, { diet, budget, query }) {
     carbs: item.carbs,
     fat: item.fat,
     tags: item.tags,
+    fit: item.fit,
     placesQuery: item.placesQuery,
     dishTerms: item.dishTerms
   }));
@@ -842,6 +943,10 @@ function HomePage({ onSearch, initial }) {
 function ResultsPage({ filters, onBack, onCheckout }) {
   const [state, setState] = useState({ loading: true });
   const [selectedMeal, setSelectedMeal] = useState(null);
+  // Driving is the honest default: it is what most people actually do for a
+  // pickup, and it is the only mode under which a swap can come out negative.
+  const [travelMode, setTravelMode] = useState("drive");
+  const [comparableOnly, setComparableOnly] = useState(true);
   // Must sit above the loading early-return: hooks cannot be conditional.
   const mapsState = useGoogleMapsState();
 
@@ -954,7 +1059,33 @@ function ResultsPage({ filters, onBack, onCheckout }) {
   }
 
   const { original, alternatives, restaurantNotice, notes } = state;
-  const availableAlternatives = alternatives.filter((alt) => alt.available);
+  const mode = travelModeById(travelMode);
+
+  // The saving on the food, the emissions of going to collect it, and what is
+  // actually left over. Recomputed on render so changing travel mode updates
+  // every card without refetching anything.
+  const scored = alternatives.map((alt) => {
+    const foodSaving = original.carbon - alt.carbon;
+    const travelCost = alt.venue ? travelEmissions(alt.venue.distance, travelMode) : 0;
+    return { ...alt, foodSaving, travelCost, netSaving: foodSaving - travelCost };
+  });
+
+  const ranked = scored.sort((a, b) =>
+    Number(b.available) - Number(a.available) ||
+    Number(b.fit.comparable) - Number(a.fit.comparable) ||
+    b.netSaving - a.netSaving
+  );
+
+  const flaggedCount = ranked.filter((alt) => !alt.fit.comparable).length;
+  // Never let the guardrail empty the page. If every option is a nutritional
+  // downgrade, that is worth showing and labelling, not hiding.
+  const hidingFlagged = comparableOnly && flaggedCount > 0 && flaggedCount < ranked.length;
+  const visibleAlternatives = hidingFlagged ? ranked.filter((alt) => alt.fit.comparable) : ranked;
+  const availableAlternatives = visibleAlternatives.filter((alt) => alt.available);
+
+  // selectedMeal is held by identity from before these fields existed, so look
+  // the scored copy back up rather than reading stale numbers off it.
+  const selected = selectedMeal ? ranked.find((alt) => alt.id === selectedMeal.id) || null : null;
 
   // One entry per distinct shop, carrying every alternative it can serve.
   const venueGroups = [];
@@ -1014,6 +1145,53 @@ function ResultsPage({ filters, onBack, onCheckout }) {
           {dietLabel && <span className="chip chip-green">{dietLabel}</span>}
         </div>
 
+        {alternatives.length > 0 && (
+          <div className="controls-row">
+            <div className="control-block">
+              <span className="control-label">Getting there</span>
+              <div className="mode-toggle" role="group" aria-label="Travel mode">
+                {TRAVEL_MODES.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`mode-btn ${travelMode === option.id ? "active" : ""}`}
+                    aria-pressed={travelMode === option.id}
+                    onClick={() => setTravelMode(option.id)}
+                  >
+                    <span aria-hidden="true">{option.icon}</span> {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="control-check">
+              <input
+                type="checkbox"
+                checked={comparableOnly}
+                onChange={(e) => setComparableOnly(e.target.checked)}
+              />
+              Nutritionally comparable only
+            </label>
+          </div>
+        )}
+
+        {hidingFlagged && (
+          <div className="notice notice-info notice-guardrail">
+            {flaggedCount} option{flaggedCount === 1 ? "" : "s"} hidden for giving you substantially{" "}
+            {FIT_SHORTFALL[ranked.find((alt) => !alt.fit.comparable).fit.basis]} than{" "}
+            {original.name} — eating less is not a swap. Untick the box to see{" "}
+            {flaggedCount === 1 ? "it" : "them"} anyway.
+          </div>
+        )}
+
+        {comparableOnly && flaggedCount > 0 && flaggedCount === ranked.length && (
+          <div className="notice notice-warn">
+            Every lower-carbon {FORMAT_CHIP_LABELS[original.format] || "option"} we found gives you
+            substantially {FIT_SHORTFALL[ranked[0].fit.basis]} than {original.name}. They are shown
+            below and flagged, rather than hidden, so the trade-off is yours to make.
+          </div>
+        )}
+
         {alternatives.length === 0 ? (
           <p className="empty-note">
             {original.category === "low"
@@ -1022,8 +1200,9 @@ function ResultsPage({ filters, onBack, onCheckout }) {
           </p>
         ) : (
           <div className="alt-grid">
-            {alternatives.map((alt) => {
-              const saved = original.carbon - alt.carbon;
+            {visibleAlternatives.map((alt) => {
+              const fitLabel = nutritionFitLabel(alt.fit);
+              const netLoss = alt.available && alt.netSaving <= 0;
               return (
                 <button
                   key={alt.id}
@@ -1036,7 +1215,32 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                 >
                   <div className="alt-name">{alt.name}</div>
                   <div className="alt-carbon">{alt.carbon.toFixed(1)} kg CO₂e</div>
-                  <div className="alt-save">saves {saved.toFixed(1)} kg</div>
+
+                  {/* Without a venue there is no trip to charge for, so the
+                      food saving is the only honest number to show. */}
+                  {alt.available ? (
+                    <React.Fragment>
+                      <div className={`alt-save ${netLoss ? "alt-save-loss" : ""}`}>
+                        {netLoss
+                          ? `costs ${Math.abs(alt.netSaving).toFixed(1)} kg net`
+                          : `saves ${alt.netSaving.toFixed(1)} kg net`}
+                      </div>
+                      {alt.travelCost > 0 && (
+                        <div className="alt-breakdown">
+                          {alt.foodSaving.toFixed(1)} food − {alt.travelCost.toFixed(1)} trip
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ) : (
+                    <div className="alt-save">saves {alt.foodSaving.toFixed(1)} kg</div>
+                  )}
+
+                  {fitLabel && (
+                    <div className={`alt-fit ${alt.fit.comparable ? "" : "alt-fit-warn"}`}>
+                      {alt.fit.comparable ? "✓" : "⚠"} {fitLabel}
+                    </div>
+                  )}
+
                   <div className="alt-price">${alt.price.toFixed(2)}</div>
                   <div className="alt-tags">
                     {alt.tags.slice(0, 2).map((tag) => <span className="tag" key={tag}>{tag}</span>)}
@@ -1060,11 +1264,34 @@ function ResultsPage({ filters, onBack, onCheckout }) {
         )}
 
         {bestAlternative && (
-          <div className="impact-callout">
-            Switching to <strong>{bestAlternative.name}</strong> saves{" "}
-            <strong>{(original.carbon - bestAlternative.carbon).toFixed(1)} kg CO₂e</strong> — about{" "}
-            {milesDrivenEquivalent(original.carbon - bestAlternative.carbon)} miles of driving.
-          </div>
+          bestAlternative.netSaving <= 0 ? (
+            /* The swap losing to its own pickup trip is not an edge case to
+               hide. It is the most useful thing this page can tell you. */
+            <div className="impact-callout impact-callout-loss">
+              <strong>{bestAlternative.name}</strong> saves only{" "}
+              {bestAlternative.foodSaving.toFixed(1)} kg CO₂e on the food, but{" "}
+              {mode.verb.toLowerCase()} the {bestAlternative.venue.distance} mi round trip costs{" "}
+              {bestAlternative.travelCost.toFixed(1)} kg — so you would come out{" "}
+              <strong>{Math.abs(bestAlternative.netSaving).toFixed(1)} kg worse off</strong>. Walk or
+              cycle there, or keep what you were having.
+            </div>
+          ) : bestAlternative.travelCost > 0 ? (
+            <div className="impact-callout">
+              Switching to <strong>{bestAlternative.name}</strong> saves{" "}
+              {bestAlternative.foodSaving.toFixed(1)} kg CO₂e on the food. {mode.verb} the{" "}
+              {bestAlternative.venue.distance} mi round trip costs{" "}
+              {bestAlternative.travelCost.toFixed(1)} kg back, leaving{" "}
+              <strong>{bestAlternative.netSaving.toFixed(1)} kg net</strong> — about{" "}
+              {milesDrivenEquivalent(bestAlternative.netSaving)} miles of driving.
+            </div>
+          ) : (
+            <div className="impact-callout">
+              Switching to <strong>{bestAlternative.name}</strong> saves{" "}
+              <strong>{bestAlternative.netSaving.toFixed(1)} kg CO₂e</strong> — about{" "}
+              {milesDrivenEquivalent(bestAlternative.netSaving)} miles of driving, and{" "}
+              {mode.verb.toLowerCase()} there adds nothing back.
+            </div>
+          )
         )}
       </section>
 
@@ -1127,6 +1354,9 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                       {group.venue.distance} mi
                       {group.venue.rating ? ` • ⭐ ${group.venue.rating}` : ""}
                       {group.venue.priceLevel ? ` • ${group.venue.priceLevel}` : ""}
+                      {mode.kgPerMile > 0
+                        ? ` • ${travelEmissions(group.venue.distance, travelMode).toFixed(1)} kg to reach`
+                        : ""}
                     </div>
                     <div className="restaurant-address">{group.venue.address}</div>
                     <div className="restaurant-serves">
@@ -1148,32 +1378,59 @@ function ResultsPage({ filters, onBack, onCheckout }) {
       </section>
       )}
 
-      {selectedMeal && (
+      {selected && (
         <section className="panel details-panel slide-in">
-          <h3>{selectedMeal.name}</h3>
-          <SustainabilityBadge carbon={selectedMeal.carbon} category={selectedMeal.category} />
-          <NutritionGrid meal={selectedMeal} />
+          <h3>{selected.name}</h3>
+          <SustainabilityBadge carbon={selected.carbon} category={selected.category} />
+          <NutritionGrid meal={selected} />
 
-          <div className="impact-callout">
-            ✨ Saves <strong>{(original.carbon - selectedMeal.carbon).toFixed(1)} kg CO₂e</strong> versus {original.name}.
+          <div className="impact-ledger">
+            <div className="impact-row">
+              <span>Food saving vs {original.name}</span>
+              <strong className="ledger-credit">−{selected.foodSaving.toFixed(1)} kg</strong>
+            </div>
+            <div className="impact-row">
+              <span>
+                {mode.label} {selected.venue ? `${selected.venue.distance} mi` : ""} round trip
+              </span>
+              <strong className={selected.travelCost > 0 ? "ledger-debit" : ""}>
+                +{selected.travelCost.toFixed(1)} kg
+              </strong>
+            </div>
+            <div className="impact-row impact-row-total">
+              <span>Net</span>
+              <strong className={selected.netSaving > 0 ? "ledger-credit" : "ledger-debit"}>
+                {selected.netSaving > 0
+                  ? `−${selected.netSaving.toFixed(1)} kg saved`
+                  : `+${Math.abs(selected.netSaving).toFixed(1)} kg worse`}
+              </strong>
+            </div>
           </div>
 
-          {selectedMeal.venue && (
+          {nutritionFitLabel(selected.fit) && (
+            <div className={`fit-note ${selected.fit.comparable ? "" : "fit-note-warn"}`}>
+              {selected.fit.comparable
+                ? `✓ ${nutritionFitLabel(selected.fit)} — this swap still feeds you like ${original.name} did.`
+                : `⚠ ${nutritionFitLabel(selected.fit)}. Lower carbon partly because there is less of it, so treat the saving with care.`}
+            </div>
+          )}
+
+          {selected.venue && (
             <div className="venue-block">
               <div className="venue-line">
-                📍 {selectedMeal.venue.name} • {selectedMeal.venue.distance} mi
-                {selectedMeal.venue.address ? ` • ${selectedMeal.venue.address}` : ""}
+                📍 {selected.venue.name} • {selected.venue.distance} mi
+                {selected.venue.address ? ` • ${selected.venue.address}` : ""}
               </div>
-              {selectedMeal.evidence && selectedMeal.evidence.quote ? (
+              {selected.evidence && selected.evidence.quote ? (
                 <blockquote className="venue-quote">
-                  “{selectedMeal.evidence.quote}”
+                  “{selected.evidence.quote}”
                   <span className="venue-quote-by">
-                    — Google review{selectedMeal.evidence.rating ? `, ${selectedMeal.evidence.rating}★` : ""}
+                    — Google review{selected.evidence.rating ? `, ${selected.evidence.rating}★` : ""}
                   </span>
                 </blockquote>
               ) : (
                 <div className="venue-caveat">
-                  Matched on category ({categoryLabel(selectedMeal.placesQuery).toLowerCase()}) — no
+                  Matched on category ({categoryLabel(selected.placesQuery).toLowerCase()}) — no
                   review here names this dish, so it may not be on the menu.
                 </div>
               )}
@@ -1181,10 +1438,16 @@ function ResultsPage({ filters, onBack, onCheckout }) {
           )}
 
           <div className="checkout-row">
-            <span className="price">${selectedMeal.price.toFixed(2)}</span>
+            <span className="price">${selected.price.toFixed(2)}</span>
             <button
               className="btn btn-primary btn-checkout"
-              onClick={() => onCheckout({ meal: selectedMeal, original, restaurant: selectedMeal.venue })}
+              onClick={() => onCheckout({
+                meal: selected,
+                original,
+                restaurant: selected.venue,
+                travel: { mode: mode.id, label: mode.label, cost: selected.travelCost },
+                netSaving: selected.netSaving
+              })}
             >
               Proceed to Checkout
             </button>
@@ -1197,8 +1460,12 @@ function ResultsPage({ filters, onBack, onCheckout }) {
 
 function CheckoutPage({ order, onDone, onBack }) {
   const [placed, setPlaced] = useState(false);
-  const { meal, original, restaurant } = order;
-  const saved = original.carbon - meal.carbon;
+  const { meal, original, restaurant, travel } = order;
+  const foodSaving = original.carbon - meal.carbon;
+  const travelCost = travel ? travel.cost : 0;
+  // The receipt reports what you actually saved, trip included — reverting to
+  // the food-only figure here would undo the point of the whole page.
+  const saved = typeof order.netSaving === "number" ? order.netSaving : foodSaving;
   const tax = meal.price * 0.0825;
   const total = meal.price + tax;
 
@@ -1214,12 +1481,17 @@ function CheckoutPage({ order, onDone, onBack }) {
 
           <div className="savings-hero">
             <div className="savings-value">{saved.toFixed(1)} kg</div>
-            <div className="savings-label">CO₂e saved on this order</div>
+            <div className="savings-label">
+              CO₂e saved on this order{travelCost > 0 ? ", pickup trip included" : ""}
+            </div>
           </div>
 
           <p className="confirm-equiv">
             That is roughly <strong>{milesDrivenEquivalent(saved)} miles</strong> of driving avoided,
-            just by choosing {meal.name} over {original.name}.
+            by choosing {meal.name} over {original.name}
+            {travelCost > 0
+              ? ` — after subtracting the ${travelCost.toFixed(1)} kg it took to collect it.`
+              : "."}
           </p>
 
           <button className="btn btn-primary" onClick={onDone}>Start a new search</button>
@@ -1247,7 +1519,10 @@ function CheckoutPage({ order, onDone, onBack }) {
           <div className="order-line">
             <div>
               <div className="order-name">Pickup</div>
-              <div className="order-sub">{restaurant.name} • {restaurant.distance} mi away</div>
+              <div className="order-sub">
+                {restaurant.name} • {restaurant.distance} mi away
+                {travel ? ` • by ${travel.label.toLowerCase()}` : ""}
+              </div>
             </div>
             <span className="order-sub">~20 min</span>
           </div>
@@ -1267,7 +1542,10 @@ function CheckoutPage({ order, onDone, onBack }) {
           <div>
             <div className="savings-banner-value">−{saved.toFixed(1)} kg CO₂e</div>
             <div className="savings-banner-label">
-              versus {original.name} • ≈{milesDrivenEquivalent(saved)} miles not driven
+              {travelCost > 0
+                ? `${foodSaving.toFixed(1)} kg saved on food, ${travelCost.toFixed(1)} kg spent getting there`
+                : `versus ${original.name}`}
+              {" • "}≈{milesDrivenEquivalent(saved)} miles not driven
             </div>
           </div>
           <div className="leaf">🌍</div>

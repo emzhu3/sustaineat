@@ -4,6 +4,11 @@ Search a food, see its nutrition and carbon footprint, and get lower-carbon
 alternatives that respect your diet and budget — each one tied to a real nearby
 place that actually sells it.
 
+Two things make the numbers honest rather than flattering: the emissions of
+going to collect the food are **subtracted** from the saving, and a swap that
+feeds you substantially less than what you searched for is **flagged rather
+than recommended**. Both are described under "Honest accounting" below.
+
 ## Running it
 
 ```bash
@@ -72,7 +77,8 @@ source. That is fine for a demo — a USDA key is free and only gates rate limit
 | `app.js` | Whole frontend: search, results, map, checkout |
 | `styles.css` | Cream / soft-green theme, all component styles |
 | `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel |
-| `server/.env` | `GOOGLE_PLACES_API_KEY` and `PORT` (gitignored) |
+| `server/places-cache.js` | Disk-backed cache for Places responses, so repeat searches are free and offline-safe |
+| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PORT`, and optionally `PLACES_CACHE` / `PLACES_CACHE_TTL_HOURS` (gitignored) |
 
 ### Food formats
 
@@ -91,6 +97,79 @@ reordering `INGREDIENT_RULES` or `FORMAT_OVERRIDES`:
   boundary, because plain substring matching silently mis-fires: "chocolate"
   contains "cola", "steak" contains "tea", "eggplant" contains "egg". Longer
   terms stay substrings so compounds like "cheesecake" still match "cheese".
+
+## Honest accounting
+
+### Net carbon, after the trip to collect it
+
+A swap that saves 1.5 kg on the food but needs an 8-mile round trip by car to
+collect has not saved anything — the drive costs 3.2 kg. Every card therefore
+shows a **net** figure and the arithmetic behind it (`1.5 food − 3.2 trip`),
+and the detail panel breaks it into a three-line ledger.
+
+- Car is the EPA's 404 g CO₂/mile; transit ~180 g per passenger-mile; walking
+  and cycling count as zero.
+- **Round trip**, because you have to get home again.
+- Distance is the straight-line haversine the backend already computes, so
+  real road distance is higher. The figure understates the trip cost rather
+  than inflating the saving.
+- The travel-mode toggle re-runs the whole page instantly — no refetch — so
+  switching from Drive to Walk on stage visibly changes every number.
+
+When the trip costs more than the swap saves, the card turns red, reads
+`costs 2.0 kg net`, and the callout says so in words. That case is not hidden:
+it is the most useful thing the page can tell you, and the fix it suggests
+(walk, cycle, or pick somewhere closer) is real advice.
+
+### The nutrition guardrail
+
+"Eat less" is the trivially correct answer to any carbon question, so a
+carbon-only recommender will happily offer a 5 kcal iced tea in place of a
+milkshake and call it a 1.5 kg saving. Every candidate is therefore compared
+against what it replaces:
+
+| Format | Judged on | Floor |
+| --- | --- | --- |
+| main, breakfast, soup | protein | 60% of the original |
+| dessert, drink | calories | 40% of the original |
+
+Protein is the point of a meal; nobody drinks a latte for the protein, so
+there the floor goes on calories instead. Options that clear the floor are
+badged `✓ Comparable protein — 21g vs 31g`; those that fail are badged
+`⚠ 42% the protein — 13g vs 31g`, ranked last, and hidden behind the
+**Nutritionally comparable only** tick-box, which is on by default.
+
+The catalogue deliberately still *carries* two flagged options so the
+guardrail is visible rather than silent — those two are exactly what a
+carbon-only ranking would have put first. Searching **beef burger** hides
+Mediterranean Veggie Wrap (0.5 kg) and Red Lentil Dal (0.7 kg) in favour of
+Black Bean Burger (0.8 kg): a *worse* carbon number, chosen because it is the
+only one of the three that still feeds you. Untick the box to see both, with
+their warnings. If every option fails the floor, nothing is hidden — they are
+shown flagged instead, because an empty page is not an answer.
+
+### Places caching — the demo does not depend on the network
+
+`/api/alternatives-nearby` fires one Places search per suggested food with
+`places.reviews` in the field mask, so a single page refresh is ~8 calls on the
+priciest SKU. Responses are now cached on `(query, location, radius)`:
+
+- Location is rounded to ~110 m, so geolocation jitter between fixes still
+  hits the cache.
+- Entries persist to `server/.cache/` (gitignored) and survive a restart, with
+  a 6-hour TTL.
+- **Only successes are cached.** A failure stays a failure, so a disabled key
+  keeps showing the setup help instead of pinning an empty result for 6 hours.
+- Dish evidence is recomputed per request rather than stored, so editing
+  `dishTerms` takes effect on reload without spending a call to see it.
+
+The server logs `2 from cache, 0 billed` per request, and `/api/health` reports
+hit/miss counts. Warm the cache on your demo queries before you present: the
+run then costs nothing, returns instantly, and **works even if the venue wifi
+dies**.
+
+Two `.env` knobs: `PLACES_CACHE=off` forces every search to hit Google (use
+after editing a `placesQuery`), and `PLACES_CACHE_TTL_HOURS` overrides the TTL.
 
 ### Data sources
 
@@ -138,4 +217,17 @@ never dies on stage:
    **Where to get them** maps those shops (grouped, so one shop serving two
    options is one pin).
 5. Pick an alternative → **Proceed to Checkout** → **Place order**. The pickup
-   location on the receipt is the venue from the card you chose.
+   location on the receipt is the venue from the card you chose, and the CO₂e
+   on it is net of the trip to collect it.
+6. Point at the notice reading *2 options hidden for giving you substantially
+   less protein* and untick **Nutritionally comparable only**. Two cards appear
+   with *lower* carbon numbers than the winner, both flagged — the swaps a
+   carbon-only tool would have recommended.
+7. Flip **Getting there** from Drive to Walk. Every net figure rises at once.
+   Search a drink with the radius set wide and the nearest venue a few miles
+   out and the opposite happens: the cards turn red and read *costs 2.0 kg
+   net*, because the drive emits more than the swap saves.
+
+> Before presenting, run your demo searches once with the backend up. That
+> fills the Places cache, so on stage every search is instant, free, and
+> independent of the venue wifi.

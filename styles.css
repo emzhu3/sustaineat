@@ -616,6 +616,149 @@ body {
   line-height: 1.5;
 }
 
+/* A swap that loses to its own pickup trip must not be dressed in the same
+   reassuring green as one that wins. */
+.impact-callout-loss {
+  background-color: #fdf0ee;
+  border-color: #f2c2b8;
+}
+
+/* ------------------------------------------- travel + nutrition controls -- */
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.control-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: var(--dark-bg);
+}
+
+.mode-btn {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+  border: none;
+  background: transparent;
+  color: var(--text-light);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.mode-btn:hover {
+  color: var(--text-dark);
+}
+
+.mode-btn.active {
+  background-color: var(--primary-green);
+  color: #fff;
+  font-weight: 600;
+}
+
+.control-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.control-check input {
+  accent-color: var(--primary-green);
+  cursor: pointer;
+}
+
+/* The arithmetic behind the net figure, shown rather than asserted. */
+.alt-breakdown {
+  font-size: 11px;
+  color: var(--text-light);
+  margin-top: 1px;
+}
+
+.alt-save-loss {
+  color: var(--red-high);
+  font-weight: 600;
+}
+
+.alt-fit {
+  font-size: 11px;
+  line-height: 1.35;
+  margin-top: 6px;
+  color: var(--accent-green);
+}
+
+.alt-fit-warn {
+  color: #b45309;
+}
+
+.impact-ledger {
+  margin-top: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.impact-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 13px;
+  font-size: 13px;
+  color: var(--text-light);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.impact-row:last-child {
+  border-bottom: none;
+}
+
+.impact-row-total {
+  background-color: var(--dark-bg);
+  font-size: 14px;
+  color: var(--text-dark);
+}
+
+.ledger-credit {
+  color: var(--accent-green);
+}
+
+.ledger-debit {
+  color: var(--red-high);
+}
+
+.fit-note {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--accent-green);
+}
+
+.fit-note-warn {
+  color: #b45309;
+}
+
 /* --------------------------------------------------------- mini map ----- */
 
 .map-and-list {

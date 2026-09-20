@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
+const { PlacesCache } = require('./places-cache');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,6 +34,13 @@ const PRICE_LEVEL_SYMBOLS = {
 
 // Remembers whether Places has ever answered, so we only print setup help once.
 let placesWarningShown = false;
+
+// Set PLACES_CACHE=off in .env to force every search to hit Google — useful
+// when you have changed a placesQuery and want to see the real result.
+const placesCache = new PlacesCache({
+  enabled: String(process.env.PLACES_CACHE || '').toLowerCase() !== 'off',
+  ttlHours: process.env.PLACES_CACHE_TTL_HOURS
+});
 
 // No longer called by the UI — every alternative now resolves its own venue
 // through /api/alternatives-nearby. Kept because the README documents it.
@@ -250,6 +258,20 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
   return { ok: true, status: 200, venues };
 }
 
+// Only successful searches are cached. A failure must stay a failure, so that
+// a key with Places disabled keeps showing the setup help instead of silently
+// pinning an empty result for the next six hours.
+async function cachedPlacesSearch(textQuery, latitude, longitude, miles, maxDistanceFactor) {
+  const key = placesCache.keyFor(textQuery, latitude, longitude, miles, maxDistanceFactor);
+
+  const cached = placesCache.get(key);
+  if (cached) return { ok: true, status: 200, venues: cached, cached: true };
+
+  const result = await placesSearch(textQuery, latitude, longitude, miles, maxDistanceFactor);
+  if (result.ok) placesCache.set(key, result.venues);
+  return result;
+}
+
 // Placeholder venues used ONLY when the Places call itself failed. They are
 // flagged source:"fallback" so the UI can say so instead of implying a real
 // pickup location. Seeded from the food name so two cards never collide.
@@ -398,11 +420,12 @@ app.post('/api/alternatives-nearby', async (req, res) => {
 
   // allSettled: one query failing must not blank the other cards.
   const settled = await Promise.allSettled(
-    capped.map((q) => placesSearch(q.query, latitude, longitude, miles, 2))
+    capped.map((q) => cachedPlacesSearch(q.query, latitude, longitude, miles, 2))
   );
 
   const results = {};
   let failed = 0;
+  let servedFromCache = 0;
 
   capped.forEach((q, i) => {
     const outcome = settled[i];
@@ -410,6 +433,8 @@ app.post('/api/alternatives-nearby', async (req, res) => {
     // A successful search that found nothing is a real answer: not available.
     // Only a failed CALL falls back to a placeholder.
     if (outcome.status === 'fulfilled' && outcome.value.ok) {
+      if (outcome.value.cached) servedFromCache += 1;
+
       const scored = outcome.value.venues.map((venue) => {
         const evidence = findDishEvidence(venue, q.dishTerms);
         const { _reviews, ...rest } = venue; // never ship the raw reviews
@@ -437,8 +462,17 @@ app.post('/api/alternatives-nearby', async (req, res) => {
     };
   });
 
+  // Dish evidence is recomputed on every request rather than cached alongside
+  // the venues, so editing `dishTerms` in app.js takes effect on the next
+  // reload without spending a Places call to see it.
+  console.log(
+    `alternatives-nearby: ${capped.length} quer${capped.length === 1 ? 'y' : 'ies'}, ` +
+    `${servedFromCache} from cache, ${capped.length - servedFromCache - failed} billed, ${failed} failed`
+  );
+
   res.json({
     success: true,
+    cache: { served: servedFromCache, of: capped.length },
     source: failed === 0 ? 'google' : failed === capped.length ? 'fallback' : 'mixed',
     notice: failed === 0
       ? null
@@ -450,9 +484,22 @@ app.post('/api/alternatives-nearby', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'Backend is running' });
+  res.json({ status: 'Backend is running', placesCache: placesCache.summary() });
 });
 
 app.listen(PORT, () => {
   console.log(`SustainEat backend running on http://localhost:${PORT}`);
+  const cache = placesCache.summary();
+  console.log(cache.enabled
+    ? `Places cache on — ${cache.entries} entries, ${cache.ttlHours}h TTL (PLACES_CACHE=off to disable)`
+    : 'Places cache OFF — every search will be billed');
 });
+
+// Debounced writes mean the last few searches may not be on disk yet. Flush on
+// the way out so a Ctrl+C between rehearsals does not throw them away.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    placesCache.flush();
+    process.exit(0);
+  });
+}
