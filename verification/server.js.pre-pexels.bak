@@ -512,102 +512,105 @@ app.get('/api/place-photo', async (req, res) => {
 
 /* ---------------------------------------------------------- food photos --- */
 
-// Pexels needs a free API key, sent as a bare Authorization header - no
-// "Bearer" prefix. Missing key is not fatal: the cards fall back to a plain
-// tile, like every other degradation here.
-const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
+// Unsplash needs a free Access Key - there is no keyless tier, and the old
+// keyless source.unsplash.com was switched off in June 2024. Missing key is not
+// fatal: the cards fall back to a plain tile, like every other degradation here.
+const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY;
 
-if (!PEXELS_API_KEY) {
-  console.warn('NOTE: PEXELS_API_KEY not set — alternative cards will show a placeholder tile instead of a photo.');
+if (!UNSPLASH_ACCESS_KEY) {
+  console.warn('NOTE: UNSPLASH_ACCESS_KEY not set — alternative cards will show a placeholder tile instead of a photo.');
 }
+
+// Unsplash asks that traffic it sends you is attributed back with these.
+const UNSPLASH_UTM = 'utm_source=SustainEat&utm_medium=referral';
 
 // Searching the bare dish name pulls in styled product shots and the odd
 // unrelated scene; " food" biases hard towards a plated dish. This is the knob
 // to turn if a particular card gets a photo that looks nothing like the dish.
-const PHOTO_QUERY_SUFFIX = ' food';
+const UNSPLASH_QUERY_SUFFIX = ' food';
 
-// Holds successes AND honest "nothing matched" answers, so a repeated search
-// costs nothing - but never a transport error or a rate-limit blip, or one bad
-// minute would blank that food until the server restarted.
+// A demo app is capped at 50 Unsplash requests an hour, which is about six
+// searches' worth. The cache is what makes the feature survive a demo, so it
+// holds successes AND honest "nothing matched" answers - but never a transport
+// error or a 403, or one rate-limit blip would blank that food until restart.
 const foodPhotoCache = new Map();
 
-// Printed at most once: a rejected key looks exactly like a quiet feature until
-// someone reads the logs.
-let photoKeyWarningShown = false;
-
-function photoQuery(foodName) {
+function unsplashQuery(foodName) {
   return String(foodName || '')
     .replace(/&/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim() + PHOTO_QUERY_SUFFIX;
+    .trim() + UNSPLASH_QUERY_SUFFIX;
+}
+
+// Unsplash's guidelines require a download ping whenever a photo is actually
+// used, so the photographer's stats are right. Fire-and-forget: it must never
+// hold up or fail the card.
+function pingUnsplashDownload(downloadLocation) {
+  if (!downloadLocation) return;
+  fetch(downloadLocation, { headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` } })
+    .catch(() => { /* stats only - nothing the user sees depends on this */ });
 }
 
 async function fetchFoodPhoto(foodName) {
-  const key = photoQuery(foodName).toLowerCase();
+  const key = unsplashQuery(foodName).toLowerCase();
   if (foodPhotoCache.has(key)) return foodPhotoCache.get(key);
-  if (!PEXELS_API_KEY) return { ok: false, reason: 'no-key' };
+  if (!UNSPLASH_ACCESS_KEY) return { ok: false, reason: 'no-key' };
 
-  const url = 'https://api.pexels.com/v1/search' +
-    `?query=${encodeURIComponent(photoQuery(foodName))}` +
-    '&per_page=1&orientation=landscape';
+  const url = 'https://api.unsplash.com/search/photos' +
+    `?query=${encodeURIComponent(unsplashQuery(foodName))}` +
+    '&per_page=1&orientation=landscape&content_filter=high';
 
-  // Bare key, no scheme prefix - that is what Pexels expects.
-  const response = await fetch(url, { headers: { Authorization: PEXELS_API_KEY } });
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
+      'Accept-Version': 'v1'
+    }
+  });
 
   if (!response.ok) {
-    const reason = response.status === 429
-      ? 'rate-limited'
-      : (response.status === 401 || response.status === 403) ? 'bad-key' : 'error';
-
-    console.error(`Pexels search failed (${response.status}) for "${foodName}"`);
-    if (reason === 'bad-key' && !photoKeyWarningShown) {
-      photoKeyWarningShown = true;
-      console.error('
-  ACTION NEEDED: Pexels rejected PEXELS_API_KEY — check server/.env');
-      console.error('  https://www.pexels.com/api/  Cards show placeholder tiles until then.
-');
-    }
+    // 403 here is almost always the hourly limit rather than a bad key.
+    const reason = response.status === 403 ? 'rate-limited' : 'error';
+    console.error(`Unsplash search failed (${response.status}) for "${foodName}"`);
     return { ok: false, reason }; // deliberately not cached
   }
 
   const data = await response.json();
-  const photo = (data.photos || [])[0];
+  const photo = (data.results || [])[0];
   if (!photo) {
     const miss = { ok: false, reason: 'no-match' };
     foodPhotoCache.set(key, miss);
     return miss;
   }
 
-  // Hotlinked straight from images.pexels.com: those requests need no key and
-  // do not count against the API quota. Sizing params on the original get
-  // exactly the crop a card needs instead of shipping a 4000px original.
-  const image = new URL(photo.src.original);
-  image.searchParams.set('auto', 'compress');
-  image.searchParams.set('cs', 'tinysrgb');
-  image.searchParams.set('fit', 'crop');
+  // Images are hotlinked from images.unsplash.com rather than proxied: that is
+  // what Unsplash asks for (it is how views are counted) and those requests do
+  // not count against the hourly limit. raw + sizing params is their
+  // recommended way to ask for exactly the size a card needs.
+  const image = new URL(photo.urls.raw);
   image.searchParams.set('w', '400');
   image.searchParams.set('h', '260');
+  image.searchParams.set('fit', 'crop');
+  image.searchParams.set('crop', 'entropy');
+  image.searchParams.set('q', '80');
 
-  // Provider-neutral shape: the card renders "Photo: <photographer> on
-  // <source>", so swapping provider again stays a server-side change.
   const result = {
     ok: true,
     url: image.toString(),
-    alt: photo.alt || foodName,
-    photographer: photo.photographer || 'Pexels',
-    photographerUrl: photo.photographer_url || 'https://www.pexels.com/',
-    source: 'Pexels',
-    // Pexels asks for a prominent link back; the photo's own page is the one
-    // they prefer.
-    sourceUrl: photo.url || 'https://www.pexels.com/'
+    alt: photo.alt_description || foodName,
+    photographer: (photo.user && photo.user.name) || 'Unsplash',
+    photographerUrl: photo.user && photo.user.links && photo.user.links.html
+      ? `${photo.user.links.html}?${UNSPLASH_UTM}`
+      : `https://unsplash.com/?${UNSPLASH_UTM}`,
+    unsplashUrl: `https://unsplash.com/?${UNSPLASH_UTM}`
   };
 
   foodPhotoCache.set(key, result);
+  pingUnsplashDownload(photo.links && photo.links.download_location);
   return result;
 }
 
 // One round trip for the whole card grid instead of one per card, so a slow
-// photo provider costs the page one wait rather than eight.
+// Unsplash costs the page one wait rather than eight.
 app.post('/api/food-photos', async (req, res) => {
   const { names } = req.body;
 
@@ -628,7 +631,7 @@ app.post('/api/food-photos', async (req, res) => {
 
   res.json({
     success: true,
-    configured: Boolean(PEXELS_API_KEY),
+    configured: Boolean(UNSPLASH_ACCESS_KEY),
     photos
   });
 });

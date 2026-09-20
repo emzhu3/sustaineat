@@ -539,14 +539,7 @@ body {
   gap: 10px;
 }
 
-/* Wrapper, so the photo credit can live outside the <button>. */
-.alt-cell {
-  display: flex;
-  flex-direction: column;
-}
-
 .alt-card {
-  flex: 1;
   text-align: left;
   font-family: inherit;
   cursor: pointer;
@@ -914,83 +907,6 @@ body {
   font-size: 12px;
   color: var(--text-light);
   line-height: 1.4;
-}
-
-/* ------------------------------------------------------------ photos ---- */
-
-/* Full-bleed inside a card that has 12px of padding: pull back by exactly that
-   much, and round only the top corners to match the card's 9px radius. */
-.card-photo {
-  margin: -12px -12px 10px -12px;
-  height: 96px;
-  border-radius: 8px 8px 0 0;
-  overflow: hidden;
-  background-color: var(--border-light);
-}
-
-.card-photo img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-/* Shown when there is no photo at all - no key, nothing matched, or the image
-   failed to load. Deliberately plain, so it never reads as a real dish photo. */
-.card-photo-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 26px;
-  background: linear-gradient(135deg, #f3ece4 0%, #e8dfd6 100%);
-}
-
-/* Unsplash's terms require the photographer and Unsplash to be credited and
-   linked wherever their photo is shown. */
-.photo-credit {
-  font-size: 9px;
-  line-height: 1.4;
-  color: var(--text-light);
-  padding: 3px 2px 0 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.photo-credit a {
-  color: var(--text-light);
-  text-decoration: underline;
-}
-
-.photo-credit a:hover {
-  color: var(--accent-green);
-}
-
-/* Google's photo of the venue itself, beside the row's text. */
-.venue-thumb {
-  flex-shrink: 0;
-  width: 56px;
-}
-
-.venue-thumb img {
-  display: block;
-  width: 56px;
-  height: 56px;
-  object-fit: cover;
-  border-radius: 6px;
-  border: 1px solid var(--border-light);
-}
-
-/* Google requires the author attribution wherever the photo is displayed. */
-.venue-thumb-credit {
-  display: block;
-  font-size: 8px;
-  line-height: 1.3;
-  color: var(--text-light);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --------------------------------------------------- restaurant list ---- */

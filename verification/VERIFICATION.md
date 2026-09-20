@@ -161,3 +161,76 @@ centred rather than anchored:
 
 Hovering a pin while another is selected shows two labels (hovered + selected).
 That is intended and they do not collide -- see `15-map-hover.png`.
+
+---
+
+## Card photos — 2026-09-20
+
+Two sources, added together: the venue thumbnail in **Where to get them** comes
+from Google Places, the dish photo on each alternative card comes from Unsplash.
+
+Driven by `node verification/verify-photos.js` against a live backend, plus a
+real-Chrome pass at `http://localhost:5000` with geolocation pinned to MIT
+(42.3601, -71.0942) and the search `beef burger`, diet None.
+
+### Verdict
+
+Both photo paths work. **Zero page errors, zero broken images**, and every
+degraded branch renders as a deliberate tile rather than a broken `<img>`.
+
+### Unsplash needed a key, contrary to the original plan
+
+The feature was specified as "free, no key required for basic use". That is not
+the case, and the difference is load-bearing for a demo:
+
+- The Unsplash API has never had a keyless tier — every call needs
+  `Authorization: Client-ID <access key>`.
+- The keyless thing people remember is `source.unsplash.com`, deprecated in
+  November 2021 and switched off in June 2024. It now returns 503.
+- A new app is in **Demo** mode: **50 requests/hour**. One per distinct food,
+  up to 8 per results page — about six fresh searches before the hour is spent.
+  Production mode raises it to 1,000/hour.
+
+So the server treats the key as optional and caches every answer for the
+process's lifetime. `UNSPLASH_ACCESS_KEY` was **not set** at the time of this
+run, so the real Unsplash branch was exercised through
+`verification/unsplash-stub.js` — a `-r` preload that answers
+`api.unsplash.com` from a fixture while every other call, including the real
+Google Places ones, passes straight through. The fixture's image URLs are
+genuine `images.unsplash.com` hotlinks (those need no key), so the browser
+really did load and render photos.
+
+### What was checked, and what was seen
+
+| Stage | Result |
+| --- | --- |
+| `places.photos` in both field masks | Live venues return `photo.name` in the documented `places/ID/photos/REF` shape; `photo.attribution` present (e.g. Audubon → "Alyssa Holmes") |
+| Fallback venues | `photo: null` — a sample location never shows a real photo |
+| `/api/place-photo` happy path | 200, `image/jpeg`, 51,671 bytes, `Cache-Control: public, max-age=86400` |
+| Key containment | `key=` appears nowhere in any client-facing payload; the browser only ever sees the photo reference |
+| `/api/place-photo` validation | `../../etc/passwd`, `https://evil.example.com/x`, `places/x/photos/y/../z` and an empty name all → **400**, upstream never called |
+| `/api/place-photo` unknown reference | Well-formed but bogus → **502**, which is what the client's `onError` swap expects |
+| `/api/food-photos` no key | `{ok: false, reason: "no-key"}` — no invented URL, no error, one start-up warning |
+| `/api/food-photos` shape | `names[]` required (400), batch capped at 8, every requested name answered |
+| Unsplash request | `Authorization: Client-ID …`, `Accept-Version: v1`, query = food name + `" food"` (`&` stripped: "Falafel & Hummus Bowl" → `Falafel Hummus Bowl food`) |
+| Unsplash response handling | Hotlinked `images.unsplash.com`, `w=400&h=260&fit=crop`, original `ixid` preserved, photographer named, both links carry `utm_source=SustainEat&utm_medium=referral`, `alt` text set |
+| Download ping | Fired once per cache fill, never on a cache hit, failures swallowed |
+| Cache | A repeat search returns a byte-identical payload and spends no quota |
+| Rate-limit blip (`UNSPLASH_STUB_MODE=flaky`) | First ask → `reason: "rate-limited"`; **the very next ask succeeds** — the failure is not cached, so one 403 cannot blank a food until restart. The success then is cached |
+| Browser, photos on | 3 alt cards each with a full-bleed dish photo and a credit line linking photographer + Unsplash; 3 venue thumbnails with Google's author attribution beneath; 0 broken images |
+| Browser, no key | Same 3 cards with the plain 🍽️ tile, no credit lines, card geometry unchanged, 0 broken images |
+| Phone width (400px) | Grid collapses to one 315px column, `scrollWidth 385 < 400` — no horizontal overflow |
+
+`node verification/verify-photos.js`: **30/30 passed** with the stub, **22/22**
+against the real no-key server, **23/23** in flaky mode.
+
+Backups: `server.js.pre-photos.bak`, `app.js.pre-photos.bak`,
+`styles.css.pre-photos.bak`, `README.md.pre-photos.bak`.
+
+### Cost note
+
+Photos are not free. Each image the browser loads is one **Place Photos**
+request, billed separately from the search tier this app already sits on. The
+day-long `Cache-Control` on `/api/place-photo` is the mitigation; removing
+`'places.photos'` from the two field masks in `server/server.js` removes the
+charge entirely and drops the app back to text-only rows.

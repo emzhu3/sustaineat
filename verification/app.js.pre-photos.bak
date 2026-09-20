@@ -452,56 +452,6 @@ function generateAlternatives(original, { diet, budget, query }) {
   }));
 }
 
-/* ------------------------------------------------------------- photos ----- */
-
-// Every photo can fail after the page has rendered - a dead Unsplash URL, a
-// Place Photos call that 502s - so each one carries its own fallback tile and
-// swaps to it on error rather than leaving a broken image in the card.
-function FoodPhoto({ photo, name }) {
-  const [failed, setFailed] = useState(false);
-  const usable = photo && photo.ok && photo.url && !failed;
-
-  if (!usable) {
-    return <div className="card-photo card-photo-empty" aria-hidden="true">🍽️</div>;
-  }
-
-  return (
-    <div className="card-photo">
-      <img
-        src={photo.url}
-        alt={photo.alt || name}
-        loading="lazy"
-        onError={() => setFailed(true)}
-      />
-    </div>
-  );
-}
-
-// Google requires the attribution wherever the image appears, so the caption is
-// rendered from authorAttributions and the photo is only shown when it is there
-// to render alongside.
-function VenuePhoto({ photo, venueName }) {
-  const [failed, setFailed] = useState(false);
-  const src = placePhotoUrl(photo, 200);
-  if (!src || failed) return null;
-
-  return (
-    <div className="venue-thumb">
-      <img
-        src={src}
-        alt={`${venueName}`}
-        loading="lazy"
-        onError={() => setFailed(true)}
-      />
-      {photo.attribution && (
-        <span className="venue-thumb-credit" title={`Photo: ${photo.attribution}`}>
-          {photo.attribution}
-        </span>
-      )}
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------ backend ----- */
 
 async function fetchNearbyRestaurants(latitude, longitude, foodType, radiusMiles) {
@@ -540,26 +490,6 @@ async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternat
         dishTerms: alt.dishTerms
       }))
     })
-  });
-  if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-  return response.json();
-}
-
-// The image bytes come through the backend, never straight from Google: the
-// media URL needs the Places key, and that key must not reach the browser.
-function placePhotoUrl(photo, maxWidth) {
-  if (!photo || !photo.name) return null;
-  return `${BACKEND_URL}/api/place-photo?name=${encodeURIComponent(photo.name)}` +
-    `&maxWidth=${maxWidth || 400}`;
-}
-
-// One request for the whole grid. Keyed by food name, which is what the cards
-// are keyed by too, so the lookup on render is direct.
-async function fetchFoodPhotos(names) {
-  const response = await fetch(`${BACKEND_URL}/api/food-photos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names })
   });
   if (!response.ok) throw new Error(`Backend returned ${response.status}`);
   return response.json();
@@ -912,8 +842,6 @@ function HomePage({ onSearch, initial }) {
 function ResultsPage({ filters, onBack, onCheckout }) {
   const [state, setState] = useState({ loading: true });
   const [selectedMeal, setSelectedMeal] = useState(null);
-  // Keyed by food name. Fills in after the page has already rendered.
-  const [foodPhotos, setFoodPhotos] = useState({});
   // Must sit above the loading early-return: hooks cannot be conditional.
   const mapsState = useGoogleMapsState();
 
@@ -953,16 +881,6 @@ function ResultsPage({ filters, onBack, onCheckout }) {
       };
 
       const suggested = generateAlternatives(original, filters);
-
-      // Photos are decoration, so they are fetched alongside the venue lookup
-      // and never awaited: a slow or rate-limited Unsplash must not hold up the
-      // results page. They pop into the cards whenever they arrive.
-      setFoodPhotos({});
-      if (suggested.length) {
-        fetchFoodPhotos(suggested.map((alt) => alt.name))
-          .then((payload) => { if (!cancelled) setFoodPhotos(payload.photos || {}); })
-          .catch(() => { /* cards keep their placeholder tiles */ });
-      }
 
       // Each suggestion has to earn its place by resolving to a real venue.
       let alternatives = suggested.map((alt) => ({
@@ -1106,13 +1024,9 @@ function ResultsPage({ filters, onBack, onCheckout }) {
           <div className="alt-grid">
             {alternatives.map((alt) => {
               const saved = original.carbon - alt.carbon;
-              const photo = foodPhotos[alt.name];
               return (
-                // The credit line sits outside the button on purpose: Unsplash
-                // asks for links back to the photographer, and a link nested
-                // inside a button is invalid and swallows its own clicks.
-                <div className="alt-cell" key={alt.id}>
                 <button
+                  key={alt.id}
                   className={`alt-card ${selectedMeal?.id === alt.id ? "active" : ""} ${alt.available ? "" : "unavailable"}`}
                   aria-disabled={alt.available ? undefined : "true"}
                   title={alt.available
@@ -1120,9 +1034,6 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                     : "No nearby place was found serving this, so it cannot be ordered"}
                   onClick={() => { if (alt.available) setSelectedMeal(alt); }}
                 >
-                  {/* Keyed by URL so a failed image does not stay failed when
-                      the next search puts a different photo in this slot. */}
-                  <FoodPhoto key={(photo && photo.url) || alt.name} photo={photo} name={alt.name} />
                   <div className="alt-name">{alt.name}</div>
                   <div className="alt-carbon">{alt.carbon.toFixed(1)} kg CO₂e</div>
                   <div className="alt-save">saves {saved.toFixed(1)} kg</div>
@@ -1143,17 +1054,6 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                     <div className="alt-venue alt-venue-none">Not available nearby</div>
                   )}
                 </button>
-                {photo && photo.ok && (
-                  <div className="photo-credit">
-                    Photo:{" "}
-                    <a href={photo.photographerUrl} target="_blank" rel="noopener noreferrer">
-                      {photo.photographer}
-                    </a>
-                    {" on "}
-                    <a href={photo.unsplashUrl} target="_blank" rel="noopener noreferrer">Unsplash</a>
-                  </div>
-                )}
-                </div>
               );
             })}
           </div>
@@ -1221,11 +1121,6 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                   onClick={() => setSelectedMeal(group.alts[0])}
                 >
                   <span className="restaurant-index">{i + 1}</span>
-                  <VenuePhoto
-                    key={(group.venue.photo && group.venue.photo.name) || group.key}
-                    photo={group.venue.photo}
-                    venueName={group.venue.name}
-                  />
                   <div className="restaurant-row-body">
                     <div className="restaurant-name">{group.venue.name}</div>
                     <div className="restaurant-meta">
