@@ -337,30 +337,39 @@ body {
   color: var(--text-dark);
 }
 
+/* One row of four, not a 2x2 of spaced boxes: the four figures are meant to be
+   read across in a glance, and the old stacked layout cost ~60px of height on a
+   page that already has to fit a badge, a ledger and the swap grid above the
+   fold. The 1px gaps over a border-coloured backdrop draw the dividers, so the
+   rules stay correct at any column count without :nth-child arithmetic. */
 .nutrition-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background-color: var(--border-light);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .nutrition-item {
   background-color: var(--dark-bg);
-  padding: 10px;
-  border-radius: 6px;
+  padding: 8px 6px;
   text-align: center;
 }
 
 .nutrition-item .label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-light);
-  margin-bottom: 4px;
+  margin-bottom: 1px;
 }
 
 .nutrition-item .value {
   display: block;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.25;
   color: var(--text-dark);
 }
 
@@ -1059,6 +1068,81 @@ body {
   line-height: 1.4;
 }
 
+/* -- where to get the searched food (shown when it is already low-carbon) -- */
+
+.pickup-intro {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-light);
+  margin: 0 0 14px;
+}
+
+.pickup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pickup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background-color: var(--dark-bg);
+}
+
+/* min-width:0 or a long address stops the flex item from ever shrinking and
+   pushes the action button off the right edge of the card. */
+.pickup-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.pickup-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.pickup-meta {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-green);
+  margin-top: 2px;
+}
+
+.pickup-address {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* .btn is sized for a full-width primary action; this one rides in a list row. */
+.pickup-action {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 8px 14px;
+  font-size: 13px;
+  text-decoration: none;
+  text-align: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .pickup-action {
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  /* Wrap the button onto its own line rather than squeezing the address. */
+  .pickup-row {
+    flex-wrap: wrap;
+  }
+}
+
 /* ------------------------------------------------------------ photos ---- */
 
 /* Full-bleed inside a card that has 12px of padding: pull back by exactly that
@@ -1368,6 +1452,12 @@ body {
   .alt-grid {
     grid-template-columns: 1fr;
   }
+
+  /* "Calories / 420" will not sit in a quarter of a 400px screen. Two rows of
+     two is still far tighter than the old spaced-out boxes. */
+  .nutrition-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 /* ============================================================== rewards === */
@@ -1510,6 +1600,9 @@ body {
   font-size: 14px;
   line-height: 1.5;
   color: var(--text-dark);
+  /* The impact ledger above ends flush at its border. Without this the CO2e
+     "Net saved" row and the points callout read as one merged block. */
+  margin-top: 14px;
   margin-bottom: 16px;
 }
 

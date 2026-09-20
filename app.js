@@ -811,6 +811,21 @@ function categoryLabel(placesQuery) {
   return readable.charAt(0).toUpperCase() + readable.slice(1);
 }
 
+// Reserved results key for the searched food's own venue lookup. Alternatives
+// key off their numeric catalog id, so a non-numeric key cannot collide.
+const PICKUP_KEY = "searched-food";
+
+// The searched food is not in the catalog, so unlike an alternative it has no
+// placesQuery or dishTerms of its own. Build them from what the user actually
+// typed: the USDA name can come back as "Soup, Ramen Noodle, Beef Flavor, Dry",
+// which is useless both as a Places query and as a review needle — and since
+// dishTerms drives the evidence quote shown on the card, a garbled term would
+// be printed verbatim.
+function pickupQueryForSearch(query, foodName) {
+  const label = String(query || "").trim() || String(foodName || "").trim() || "food";
+  return { placesQuery: `${label} restaurant`, dishTerms: [label.toLowerCase()] };
+}
+
 // One targeted Places search per alternative. An alternative is only offered
 // if something nearby actually sells that kind of food.
 async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternatives) {
@@ -1248,6 +1263,23 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
 
       const suggested = generateAlternatives(original, filters);
 
+      // Where to get the searched food itself. Only worth asking when it is
+      // already low-carbon: above that, the point of the page is the swap.
+      // Started here and awaited below so it runs alongside the alternatives
+      // lookup rather than adding a second round trip after it. It is also a
+      // separate call on purpose — folding it into the alternatives request
+      // would push a real alternative out of that endpoint's 8-query cap.
+      const pickupPromise = original.category === "low"
+        ? fetchAlternativeVenues(
+            filters.latitude, filters.longitude, filters.distance,
+            [{
+              id: PICKUP_KEY,
+              name: original.name,
+              ...pickupQueryForSearch(filters.query, original.name)
+            }]
+          ).catch((err) => ({ pickupFailed: err.message }))
+        : null;
+
       // Photos are decoration, so they are fetched alongside the venue lookup
       // and never awaited: a slow or rate-limited photo provider must not hold
       // up the results page. They pop into the cards whenever they arrive.
@@ -1289,12 +1321,32 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         alternatives.sort((a, b) => Number(b.available) - Number(a.available));
       }
 
+      // Resolved after the alternatives above, so the two searches overlap.
+      let pickup = null;
+      if (pickupPromise) {
+        const payload = await pickupPromise;
+        if (payload.pickupFailed) {
+          pickup = { status: "error", message: payload.pickupFailed, venues: [] };
+        } else {
+          const found = (payload.results || {})[PICKUP_KEY] || { source: "google", venues: [] };
+          // A "fallback" payload is invented placeholder data. Offering it here
+          // as somewhere to collect your dinner would be making it up, so it is
+          // reported as nothing found instead of dressed up as a real venue.
+          const fabricated = found.source === "fallback";
+          pickup = {
+            status: fabricated ? "empty" : "ok",
+            notice: payload.notice || null,
+            venues: fabricated ? [] : (found.venues || [])
+          };
+        }
+      }
+
       if (filters.approximateLocation) {
         notes.push(`Using ${FALLBACK_LOCATION.label} — location access was unavailable.`);
       }
 
       if (!cancelled) {
-        setState({ loading: false, original, alternatives, restaurantNotice, notes });
+        setState({ loading: false, original, alternatives, restaurantNotice, notes, pickup });
         // Land on something the user can actually order.
         setSelectedMeal(alternatives.find((alt) => alt.available) || null);
       }
@@ -1329,7 +1381,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
     );
   }
 
-  const { original, alternatives, restaurantNotice, notes } = state;
+  const { original, alternatives, restaurantNotice, notes, pickup } = state;
   const mode = travelModeById(travelMode);
 
   // The saving on the food, the emissions of going to collect it, and what is
@@ -1426,6 +1478,78 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         <SustainabilityBadge carbon={original.carbon} category={original.category} />
         <NutritionGrid meal={original} />
       </section>
+
+      {/* Already low-carbon: there is nothing useful to swap it for, so the
+          helpful answer is where to actually get it rather than a swap grid. */}
+      {original.category === "low" && pickup && (
+        <section className="panel">
+          <div className="panel-header">
+            <h3>📍 Get {original.name} nearby</h3>
+            <span className="chip chip-green">Already low impact</span>
+          </div>
+
+          <p className="pickup-intro">
+            At {original.carbon.toFixed(1)} kg CO₂e this is already a low-emissions choice, so
+            there is no swap to recommend. These are places within {filters.distance} mi that
+            came back for “{filters.query}”.
+          </p>
+
+          {pickup.status === "error" ? (
+            <div className="notice notice-warn">{pickup.message}</div>
+          ) : pickup.venues.length === 0 ? (
+            <p className="empty-note">
+              No nearby places came back for “{filters.query}” within {filters.distance} mi.
+              {pickup.notice ? ` ${pickup.notice}` : ""} Try widening the distance on your search.
+            </p>
+          ) : (
+            <div className="pickup-list">
+              {pickup.venues.slice(0, 6).map((venue) => (
+                <div className="pickup-row" key={`${venue.name}|${venue.address}`}>
+                  <VenuePhoto photo={venue.photo} venueName={venue.name} />
+
+                  <div className="pickup-body">
+                    <div className="pickup-name">{venue.name}</div>
+                    <div className="pickup-meta">
+                      {venue.distance} mi away
+                      {venue.rating ? ` • ${venue.rating}★ (${venue.reviewCount})` : ""}
+                      {venue.priceLevel ? ` • ${venue.priceLevel}` : ""}
+                    </div>
+                    <div className="pickup-address">{venue.address}</div>
+
+                    {/* Same standard the swap cards are held to: quote a review
+                        that names the dish, or admit we only matched a category. */}
+                    {venue.evidence && venue.evidence.quote ? (
+                      <blockquote className="venue-quote">
+                        “{venue.evidence.quote}”
+                        <span className="venue-quote-by">
+                          — Google review{venue.evidence.rating ? `, ${venue.evidence.rating}★` : ""}
+                        </span>
+                      </blockquote>
+                    ) : (
+                      <div className="venue-caveat">
+                        No review here names “{filters.query}” — matched on category, so check
+                        the menu before setting out.
+                      </div>
+                    )}
+                  </div>
+
+                  {venue.mapsUrl && (
+                    <a
+                      className="btn btn-secondary pickup-action"
+                      href={venue.mapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Opens this place on Google Maps, where ordering and directions live"
+                    >
+                      Order or directions ↗
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="panel">
         <div className="panel-header">
