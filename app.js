@@ -1,6 +1,16 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
-const BACKEND_URL = "http://localhost:5000";
+// The backend serves this page as well as the API, so the API lives at the
+// origin the page was loaded from — localhost:5000 in development, the Render
+// URL in production, with nothing to reconfigure between them. A no-build
+// static frontend has no env-var mechanism; same-origin is the mechanism.
+//
+// The exception is VS Code Live Server on :5500, which serves these files but
+// has no API behind it, so those requests are sent to the local backend.
+const BACKEND_URL =
+  window.location.port === "5500"
+    ? "http://localhost:5000"
+    : window.location.origin;
 
 // Personal FoodData Central key (1,000 requests/hour), not the shared DEMO_KEY,
 // which caps at ~30/hour per IP and would 429 mid-demo.

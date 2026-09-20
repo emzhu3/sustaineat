@@ -14,6 +14,10 @@ app.use(express.json());
 // file:// blocks, and geolocation needs a secure context. Serving it from here
 // means one command and one origin for the whole demo.
 app.use('/server', (req, res) => res.status(404).end()); // never expose .env
+// The static root is the repo root, so the dev folder would be public too --
+// and its app.js.*.bak copies still carry the USDA key that lives in app.js.
+// Rotating that key is worthless while these stay fetchable.
+app.use('/verification', (req, res) => res.status(404).end());
 app.use(express.static(path.join(__dirname, '..'), { dotfiles: 'deny' }));
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
@@ -670,7 +674,11 @@ app.get('/api/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`SustainEat backend running on http://localhost:${PORT}`);
+  // PORT is injected by the host in production, where "localhost" would be a
+  // lie in the logs. Only claim a browsable URL when we picked the port.
+  console.log(process.env.PORT
+    ? `SustainEat backend listening on port ${PORT}`
+    : `SustainEat backend running on http://localhost:${PORT}`);
   const cache = placesCache.summary();
   console.log(cache.enabled
     ? `Places cache on — ${cache.entries} entries, ${cache.ttlHours}h TTL (PLACES_CACHE=off to disable)`
