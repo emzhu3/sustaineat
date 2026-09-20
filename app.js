@@ -452,6 +452,193 @@ function generateAlternatives(original, { diet, budget, query }) {
   }));
 }
 
+/* ------------------------------------------------------------- rewards ---- */
+
+// The app only ever asks one thing of you — take the lower-carbon swap — so the
+// reward has to track exactly that. Two independent earners, both continuous so
+// there is no cliff where one more gram of CO2e costs you a whole tier:
+//
+//   1. the footprint of what you ordered  (lower = more)
+//   2. how much that saved against what you searched for
+//
+// Everything else (streak, tier) is a multiplier on top, never a replacement.
+
+const REWARDS_STORAGE_KEY = "sustaineat.rewards.v1";
+
+// Beef sits at 8.5 kg and lamb at 20, so a ceiling of 8 means the meat-heavy end
+// of the catalog earns nothing from its own footprint and has to rely on the
+// saving. A berry sorbet at 0.3 earns the near-full 116.
+const FOOTPRINT_CEILING = 8.0;
+const POINTS_PER_KG_UNDER_CEILING = 15;
+
+const POINTS_PER_KG_SAVED = 25;
+// A lamb-to-sorbet swap genuinely saves ~19.7 kg, but letting one order pay out
+// 490 points makes every order after it feel pointless. Count the first 12 kg.
+const MAX_SAVED_KG_COUNTED = 12;
+
+// Consecutive LOW-impact orders. Capped, or a long streak would dwarf the
+// footprint signal the whole scheme is built on.
+const STREAK_BONUS_PER_ORDER = 0.1;
+const MAX_STREAK_MULTIPLIER = 1.5;
+
+// Only the last N entries are kept, so the ledger cannot grow without bound in
+// localStorage.
+const MAX_HISTORY = 25;
+
+// Tier is earned on LIFETIME points and never falls when you spend, so
+// redeeming a reward can never demote you.
+const TIERS = [
+  { name: "Seedling",   icon: "🌱", min: 0,     multiplier: 1.0,  perk: "You are earning points on every swap" },
+  { name: "Sprout",     icon: "🌿", min: 500,   multiplier: 1.05, perk: "+5% points on every order" },
+  { name: "Sapling",    icon: "🪴", min: 1500,  multiplier: 1.1,  perk: "+10% points, early access to new rewards" },
+  { name: "Canopy",     icon: "🌳", min: 4000,  multiplier: 1.15, perk: "+15% points, free pickup upgrades" },
+  { name: "Old Growth", icon: "🌲", min: 10000, multiplier: 1.2,  perk: "+20% points, a tree planted every month" }
+];
+
+// `discount` is dollars off an order and is applied at checkout. A reward with
+// no discount is a perk, redeemed straight from the rewards page.
+const REWARD_CATALOG = [
+  { id: "off-2",   cost: 300,  discount: 2,  icon: "🎟️", name: "$2 off",      detail: "Straight off your next pickup order." },
+  { id: "milk",    cost: 550,  discount: 0,  icon: "🥤", name: "Plant-milk upgrade", detail: "Oat, soy or almond on the house at any partner cafe." },
+  { id: "off-5",   cost: 700,  discount: 5,  icon: "🎟️", name: "$5 off",      detail: "Enough to cover a sorbet outright." },
+  { id: "tree",    cost: 900,  discount: 0,  icon: "🌳", name: "Plant a tree", detail: "We fund one sapling through a reforestation partner, in your name." },
+  { id: "off-10",  cost: 1300, discount: 10, icon: "🎟️", name: "$10 off",     detail: "Roughly a whole grain bowl, free." },
+  { id: "off-20",  cost: 2400, discount: 20, icon: "🏅", name: "$20 off",      detail: "The big one. Two lunches on us." }
+];
+
+function rewardById(id) {
+  return REWARD_CATALOG.find((reward) => reward.id === id) || null;
+}
+
+function footprintPoints(carbon) {
+  return Math.round(Math.max(0, FOOTPRINT_CEILING - carbon) * POINTS_PER_KG_UNDER_CEILING);
+}
+
+function savingsPoints(savedKg) {
+  const counted = Math.min(Math.max(0, savedKg || 0), MAX_SAVED_KG_COUNTED);
+  return Math.round(counted * POINTS_PER_KG_SAVED);
+}
+
+function streakMultiplier(streak) {
+  return Math.min(MAX_STREAK_MULTIPLIER, 1 + Math.max(0, streak || 0) * STREAK_BONUS_PER_ORDER);
+}
+
+function tierFor(lifetimePoints) {
+  let current = TIERS[0];
+  for (const tier of TIERS) {
+    if (lifetimePoints >= tier.min) current = tier;
+  }
+  return current;
+}
+
+function nextTierFor(lifetimePoints) {
+  return TIERS.find((tier) => lifetimePoints < tier.min) || null;
+}
+
+// How far through the current tier you are, for the progress bar.
+function tierProgress(lifetimePoints) {
+  const current = tierFor(lifetimePoints);
+  const next = nextTierFor(lifetimePoints);
+  if (!next) return 100;
+  return Math.min(100, Math.round(((lifetimePoints - current.min) / (next.min - current.min)) * 100));
+}
+
+// Single source of truth for the arithmetic, so the "+230 pts" on a results
+// card, the checkout preview and the receipt can never disagree.
+function pointsForOrder({ carbon, savedKg, streak, lifetimePoints }) {
+  const footprint = footprintPoints(carbon);
+  const savings = savingsPoints(savedKg);
+  const streakMult = streakMultiplier(streak);
+  const tier = tierFor(lifetimePoints || 0);
+  const saved = Math.max(0, savedKg || 0);
+  const countedKg = Math.min(saved, MAX_SAVED_KG_COUNTED);
+  return {
+    footprint,
+    savings,
+    savedKg: saved,
+    countedKg,
+    // Surfaced on the receipt, so a lamb swap does not read as a
+    // contradiction: 19.5 kg saved above, points for only 12 below.
+    capped: countedKg < saved,
+    streak: streak || 0,
+    streakMult,
+    tier,
+    total: Math.round((footprint + savings) * streakMult * tier.multiplier)
+  };
+}
+
+/* ---------------------------------------------------- the points ledger --- */
+
+const EMPTY_REWARDS = { points: 0, lifetimePoints: 0, streak: 0, orders: [], redemptions: [] };
+
+const safeNumber = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+const safeList = (value) => (Array.isArray(value) ? value.slice(0, MAX_HISTORY) : []);
+
+function loadRewards() {
+  try {
+    const raw = window.localStorage.getItem(REWARDS_STORAGE_KEY);
+    if (!raw) return { ...EMPTY_REWARDS };
+    const parsed = JSON.parse(raw) || {};
+    // Re-derive every field rather than trusting the blob: a half-written or
+    // hand-edited entry should cost you history, not turn the balance into NaN
+    // and render "NaN pts" for the rest of the demo.
+    return {
+      points: Math.max(0, safeNumber(parsed.points)),
+      lifetimePoints: Math.max(0, safeNumber(parsed.lifetimePoints)),
+      streak: Math.max(0, safeNumber(parsed.streak)),
+      orders: safeList(parsed.orders),
+      redemptions: safeList(parsed.redemptions)
+    };
+  } catch (err) {
+    // A private window, blocked site data or a corrupt entry all land here. A
+    // demo must not die because the browser will not remember anything.
+    return { ...EMPTY_REWARDS };
+  }
+}
+
+function saveRewards(state) {
+  try {
+    window.localStorage.setItem(REWARDS_STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    // Storage full or unavailable — the session keeps working in memory.
+  }
+  return state;
+}
+
+// Spend first, then earn, so an order can never be paid for with the points
+// that same order is about to pay out.
+function applyOrder(rewards, { meal, original, restaurant, reward, earned }) {
+  const spent = reward ? reward.cost : 0;
+  const entry = {
+    at: Date.now(),
+    name: meal.name,
+    versus: original.name,
+    carbon: meal.carbon,
+    savedKg: Math.max(0, original.carbon - meal.carbon),
+    points: earned.total,
+    venue: restaurant ? restaurant.name : null
+  };
+  return {
+    points: Math.max(0, rewards.points - spent) + earned.total,
+    lifetimePoints: rewards.lifetimePoints + earned.total,
+    // Only a genuinely low-impact order extends the streak; a medium one ends
+    // it. Otherwise "streak" would just mean "ordered again".
+    streak: meal.category === "low" ? rewards.streak + 1 : 0,
+    orders: [entry, ...rewards.orders].slice(0, MAX_HISTORY),
+    redemptions: reward
+      ? [{ at: Date.now(), id: reward.id, name: reward.name, cost: reward.cost }, ...rewards.redemptions].slice(0, MAX_HISTORY)
+      : rewards.redemptions
+  };
+}
+
+function applyRedemption(rewards, reward) {
+  return {
+    ...rewards,
+    points: Math.max(0, rewards.points - reward.cost),
+    redemptions: [{ at: Date.now(), id: reward.id, name: reward.name, cost: reward.cost }, ...rewards.redemptions].slice(0, MAX_HISTORY)
+  };
+}
+
 /* ------------------------------------------------------------- photos ----- */
 
 // Every photo can fail after the page has rendered - a dead stock-photo URL, a
@@ -818,7 +1005,7 @@ function MiniMap({ origin, restaurants, selectedId, onSelect }) {
   );
 }
 
-function HomePage({ onSearch, initial }) {
+function HomePage({ onSearch, initial, rewards, onOpenRewards }) {
   const [searchQuery, setSearchQuery] = useState(initial.query || "");
   const [diet, setDiet] = useState(initial.diet || "none");
   const [budget, setBudget] = useState(initial.budget || "");
@@ -849,6 +1036,8 @@ function HomePage({ onSearch, initial }) {
       <div className="header">
         <h1 className="logo">🌱 SustainEat</h1>
       </div>
+
+      <RewardsSummary rewards={rewards} onOpen={onOpenRewards} />
 
       <div className="hero">
         <h2>What are you craving right now?</h2>
@@ -909,7 +1098,7 @@ function HomePage({ onSearch, initial }) {
   );
 }
 
-function ResultsPage({ filters, onBack, onCheckout }) {
+function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   const [state, setState] = useState({ loading: true });
   const [selectedMeal, setSelectedMeal] = useState(null);
   // Keyed by food name. Fills in after the page has already rendered.
@@ -1066,9 +1255,26 @@ function ResultsPage({ filters, onBack, onCheckout }) {
   const formatLabel = FORMAT_LABELS[original.format] || FORMAT_LABELS.main;
   const bestAlternative = availableAlternatives[0];
 
+  // What the currently selected swap would pay out, previewed before checkout.
+  const selectedEarn = selectedMeal
+    ? pointsForOrder({
+        carbon: selectedMeal.carbon,
+        savedKg: original.carbon - selectedMeal.carbon,
+        streak: rewards.streak,
+        lifetimePoints: rewards.lifetimePoints
+      })
+    : null;
+
   return (
     <div className="results-page">
-      <button className="btn btn-back" onClick={onBack}>← Back</button>
+      <div className="results-top">
+        <button className="btn btn-back" onClick={onBack}>← Back</button>
+        {/* Plain text, not a link: navigating away would unmount the page and
+            re-run the (billable) Places search on the way back. */}
+        <span className="points-chip" title="Green Points — place an order to earn more">
+          {tierFor(rewards.lifetimePoints).icon} {formatPoints(rewards.points)} pts
+        </span>
+      </div>
 
       {notes.map((note, idx) => (
         <div className="notice notice-warn" key={idx}>{note}</div>
@@ -1107,6 +1313,12 @@ function ResultsPage({ filters, onBack, onCheckout }) {
             {alternatives.map((alt) => {
               const saved = original.carbon - alt.carbon;
               const photo = foodPhotos[alt.name];
+              const earn = pointsForOrder({
+                carbon: alt.carbon,
+                savedKg: saved,
+                streak: rewards.streak,
+                lifetimePoints: rewards.lifetimePoints
+              });
               return (
                 // The credit line sits outside the button on purpose: the
                 // photo provider asks for links back, and a link nested inside
@@ -1127,6 +1339,7 @@ function ResultsPage({ filters, onBack, onCheckout }) {
                   <div className="alt-carbon">{alt.carbon.toFixed(1)} kg CO₂e</div>
                   <div className="alt-save">saves {saved.toFixed(1)} kg</div>
                   <div className="alt-price">${alt.price.toFixed(2)}</div>
+                  <PointsPill points={earn.total} muted={!alt.available} />
                   <div className="alt-tags">
                     {alt.tags.slice(0, 2).map((tag) => <span className="tag" key={tag}>{tag}</span>)}
                   </div>
@@ -1265,6 +1478,13 @@ function ResultsPage({ filters, onBack, onCheckout }) {
             ✨ Saves <strong>{(original.carbon - selectedMeal.carbon).toFixed(1)} kg CO₂e</strong> versus {original.name}.
           </div>
 
+          <div className="earn-callout">
+            🌱 Earns <strong>{formatPoints(selectedEarn.total)} Green Points</strong>
+            {selectedEarn.streakMult > 1
+              ? " — your ×" + selectedEarn.streakMult.toFixed(2) + " streak bonus is included"
+              : " — redeemable for discounts on future orders"}.
+          </div>
+
           {selectedMeal.venue && (
             <div className="venue-block">
               <div className="venue-line">
@@ -1302,14 +1522,32 @@ function ResultsPage({ filters, onBack, onCheckout }) {
   );
 }
 
-function CheckoutPage({ order, onDone, onBack }) {
-  const [placed, setPlaced] = useState(false);
+function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }) {
+  const [receipt, setReceipt] = useState(null);
+  const [rewardId, setRewardId] = useState(null);
   const { meal, original, restaurant } = order;
   const saved = original.carbon - meal.carbon;
-  const tax = meal.price * 0.0825;
-  const total = meal.price + tax;
 
-  if (placed) {
+  // Only dollar-off rewards can ride along on an order. Perks (a tree, a milk
+  // upgrade) are redeemed straight from the rewards page instead.
+  const vouchers = REWARD_CATALOG.filter((reward) => reward.discount > 0);
+  const applied = rewardId ? rewardById(rewardId) : null;
+  // A $10 voucher against a $6 sorbet cannot hand back change.
+  const discount = applied ? Math.min(applied.discount, meal.price) : 0;
+  const subtotal = meal.price - discount;
+  const tax = subtotal * 0.0825;
+  const total = subtotal + tax;
+
+  // Previewed with the balance as it stands now; onPlace recomputes from the
+  // same function, so the receipt cannot disagree with what was shown here.
+  const earned = pointsForOrder({
+    carbon: meal.carbon,
+    savedKg: saved,
+    streak: rewards.streak,
+    lifetimePoints: rewards.lifetimePoints
+  });
+
+  if (receipt) {
     return (
       <div className="checkout-page">
         <div className="confirm-card">
@@ -1324,12 +1562,31 @@ function CheckoutPage({ order, onDone, onBack }) {
             <div className="savings-label">CO₂e saved on this order</div>
           </div>
 
+          {receipt.tierUp && (
+            <div className="tier-up">
+              {receipt.tierUp.icon} You reached <strong>{receipt.tierUp.name}</strong> —{" "}
+              {receipt.tierUp.perk.toLowerCase()}.
+            </div>
+          )}
+
+          <PointsBreakdown earned={receipt.earned} title="Green Points earned" />
+
+          <div className="balance-line">
+            New balance <strong>{formatPoints(receipt.balance)} pts</strong>
+            {receipt.spent > 0 && (
+              <span className="balance-spent"> · {formatPoints(receipt.spent)} pts spent on your discount</span>
+            )}
+          </div>
+
           <p className="confirm-equiv">
             That is roughly <strong>{milesDrivenEquivalent(saved)} miles</strong> of driving avoided,
             just by choosing {meal.name} over {original.name}.
           </p>
 
-          <button className="btn btn-primary" onClick={onDone}>Start a new search</button>
+          <div className="confirm-actions">
+            <button className="btn btn-primary" onClick={onDone}>Start a new search</button>
+            <button className="btn btn-secondary" onClick={onOpenRewards}>View rewards</button>
+          </div>
         </div>
       </div>
     );
@@ -1360,6 +1617,16 @@ function CheckoutPage({ order, onDone, onBack }) {
           </div>
         )}
 
+        {discount > 0 && (
+          <div className="order-line">
+            <div>
+              <div className="order-name order-name-discount">{applied.name} reward</div>
+              <div className="order-sub">{formatPoints(applied.cost)} pts</div>
+            </div>
+            <span className="price price-discount">−${discount.toFixed(2)}</span>
+          </div>
+        )}
+
         <div className="order-line">
           <div className="order-sub">Estimated tax</div>
           <span className="order-sub">${tax.toFixed(2)}</span>
@@ -1368,6 +1635,53 @@ function CheckoutPage({ order, onDone, onBack }) {
         <div className="order-line order-total">
           <div className="order-name">Total</div>
           <span className="price">${total.toFixed(2)}</span>
+        </div>
+
+        <div className="reward-apply">
+          <div className="reward-apply-head">
+            <span>🎟️ Use Green Points</span>
+            <span className="reward-apply-balance">{formatPoints(rewards.points)} pts available</span>
+          </div>
+
+          <div className="reward-apply-options">
+            <button
+              type="button"
+              className={`reward-option ${!rewardId ? "active" : ""}`}
+              onClick={() => setRewardId(null)}
+            >
+              <span className="reward-option-name">No discount</span>
+              <span className="reward-option-cost">Keep your points</span>
+            </button>
+
+            {vouchers.map((reward) => {
+              const affordable = rewards.points >= reward.cost;
+              return (
+                <button
+                  key={reward.id}
+                  type="button"
+                  className={`reward-option ${rewardId === reward.id ? "active" : ""} ${affordable ? "" : "locked"}`}
+                  disabled={!affordable}
+                  onClick={() => setRewardId(reward.id)}
+                  title={affordable
+                    ? `Spend ${formatPoints(reward.cost)} pts for ${reward.name}`
+                    : `${formatPoints(reward.cost - rewards.points)} more points needed`}
+                >
+                  <span className="reward-option-name">{reward.name}</span>
+                  <span className="reward-option-cost">
+                    {affordable ? `${formatPoints(reward.cost)} pts` : `${formatPoints(reward.cost - rewards.points)} pts to go`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {applied && discount < applied.discount && (
+            <div className="notice notice-info">
+              This order is only ${meal.price.toFixed(2)}, so just ${discount.toFixed(2)} of the{" "}
+              {applied.name} reward applies and the rest is not refunded — a smaller
+              voucher goes further here.
+            </div>
+          )}
         </div>
 
         <div className="savings-banner">
@@ -1380,7 +1694,12 @@ function CheckoutPage({ order, onDone, onBack }) {
           <div className="leaf">🌍</div>
         </div>
 
-        <button className="btn btn-primary btn-checkout" onClick={() => setPlaced(true)}>
+        <PointsBreakdown earned={earned} title="You will earn" />
+
+        <button
+          className="btn btn-primary btn-checkout"
+          onClick={() => setReceipt(onPlace({ meal, original, restaurant, reward: applied }))}
+        >
           Place order • ${total.toFixed(2)}
         </button>
         <p className="demo-note">Demo checkout — no payment is processed.</p>
@@ -1389,16 +1708,297 @@ function CheckoutPage({ order, onDone, onBack }) {
   );
 }
 
+/* ---------------------------------------------------- rewards components -- */
+
+const formatPoints = (points) => Math.round(points || 0).toLocaleString();
+
+// The earn preview that rides along on every alternative card.
+function PointsPill({ points, muted }) {
+  return <span className={`points-pill ${muted ? "points-pill-muted" : ""}`}>+{formatPoints(points)} pts</span>;
+}
+
+function TierBar({ lifetimePoints, compact }) {
+  const tier = tierFor(lifetimePoints);
+  const next = nextTierFor(lifetimePoints);
+  const progress = tierProgress(lifetimePoints);
+
+  return (
+    <div className={`tier-bar ${compact ? "tier-bar-compact" : ""}`}>
+      <div className="tier-bar-track">
+        <div className="tier-bar-fill" style={{ width: `${progress}%` }} />
+      </div>
+      <div className="tier-bar-note">
+        {next
+          ? <span>{formatPoints(next.min - lifetimePoints)} pts to {next.icon} {next.name}</span>
+          : <span>Top tier — {tier.perk.toLowerCase()}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Homepage entry point into the scheme. A first-time visitor sees the ladder
+// rather than a bare zero, so the feature explains itself before any order.
+function RewardsSummary({ rewards, onOpen }) {
+  const tier = tierFor(rewards.lifetimePoints);
+  const fresh = rewards.lifetimePoints === 0;
+
+  return (
+    <button type="button" className="rewards-summary" onClick={onOpen}>
+      <div className="rewards-summary-top">
+        <span className="rewards-summary-tier">{tier.icon} {tier.name}</span>
+        <span className="rewards-summary-points">{formatPoints(rewards.points)} pts</span>
+      </div>
+      <TierBar lifetimePoints={rewards.lifetimePoints} compact />
+      <div className="rewards-summary-cta">
+        {fresh
+          ? "Order a lower-carbon swap to start earning — the smaller the footprint, the bigger the payout."
+          : `${rewards.streak > 0 ? `🔥 ${rewards.streak}-order low-impact streak • ` : ""}View rewards →`}
+      </div>
+    </button>
+  );
+}
+
+// The same breakdown is the preview at checkout and the receipt after it, so
+// the numbers a person agreed to are the numbers they got.
+function PointsBreakdown({ earned, title }) {
+  return (
+    <div className="points-breakdown">
+      <div className="points-breakdown-title">{title}</div>
+      <div className="points-line">
+        <span>Low-footprint bonus</span>
+        <span>+{formatPoints(earned.footprint)}</span>
+      </div>
+      <div className="points-line">
+        <span>
+          Carbon saved
+          {earned.capped && (
+            <span className="points-line-note">
+              {" "}· first {MAX_SAVED_KG_COUNTED} kg of {earned.savedKg.toFixed(1)} counted
+            </span>
+          )}
+        </span>
+        <span>+{formatPoints(earned.savings)}</span>
+      </div>
+      {earned.streakMult > 1 && (
+        <div className="points-line points-line-mult">
+          <span>🔥 {earned.streak}-order streak</span>
+          <span>×{earned.streakMult.toFixed(2)}</span>
+        </div>
+      )}
+      {earned.tier.multiplier > 1 && (
+        <div className="points-line points-line-mult">
+          <span>{earned.tier.icon} {earned.tier.name} member</span>
+          <span>×{earned.tier.multiplier.toFixed(2)}</span>
+        </div>
+      )}
+      <div className="points-line points-line-total">
+        <span>Total</span>
+        <span>+{formatPoints(earned.total)} pts</span>
+      </div>
+    </div>
+  );
+}
+
+function RewardCard({ reward, balance, onRedeem }) {
+  const affordable = balance >= reward.cost;
+  const short = reward.cost - balance;
+
+  return (
+    <div className={`reward-card ${affordable ? "" : "reward-card-locked"}`}>
+      <div className="reward-icon">{reward.icon}</div>
+      <div className="reward-body">
+        <div className="reward-name">{reward.name}</div>
+        <div className="reward-detail">{reward.detail}</div>
+      </div>
+      <div className="reward-action">
+        <div className="reward-cost">{formatPoints(reward.cost)} pts</div>
+        {reward.discount > 0 ? (
+          <span className="reward-hint">
+            {affordable ? "Apply at checkout" : `${formatPoints(short)} pts to go`}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-small"
+            disabled={!affordable}
+            onClick={() => onRedeem(reward)}
+          >
+            {affordable ? "Redeem" : `${formatPoints(short)} pts to go`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RewardsPage({ rewards, onBack, onRedeem }) {
+  const tier = tierFor(rewards.lifetimePoints);
+
+  // Earning and spending are one story, so they share one timeline.
+  const activity = [
+    ...rewards.orders.map((entry) => ({ ...entry, kind: "earn" })),
+    ...rewards.redemptions.map((entry) => ({ ...entry, kind: "spend" }))
+  ].sort((a, b) => b.at - a.at).slice(0, 10);
+
+  return (
+    <div className="rewards-page">
+      <button className="btn btn-back" onClick={onBack}>← Back</button>
+
+      <section className="panel rewards-hero">
+        <div className="panel-label">Green Points</div>
+        <div className="rewards-balance">{formatPoints(rewards.points)}</div>
+        <div className="rewards-balance-label">
+          points to spend • {formatPoints(rewards.lifetimePoints)} earned all time
+        </div>
+        <div className="rewards-tier-line">
+          <span className="chip chip-green">{tier.icon} {tier.name}</span>
+          <span className="rewards-tier-perk">{tier.perk}</span>
+        </div>
+        <TierBar lifetimePoints={rewards.lifetimePoints} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-header"><h3>🎁 Spend your points</h3></div>
+        <div className="reward-grid">
+          {REWARD_CATALOG.map((reward) => (
+            <RewardCard key={reward.id} reward={reward} balance={rewards.points} onRedeem={onRedeem} />
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header"><h3>📈 How points work</h3></div>
+        <ul className="points-rules">
+          <li>
+            <strong>The lower the footprint, the more you earn.</strong> Every kg
+            of CO₂e your meal comes in under {FOOTPRINT_CEILING.toFixed(1)} kg is
+            worth {POINTS_PER_KG_UNDER_CEILING} pts — a berry sorbet at 0.3 kg
+            pays {footprintPoints(0.3)}, a cheese dish at 2.2 kg pays {footprintPoints(2.2)},
+            and anything over {FOOTPRINT_CEILING.toFixed(1)} kg pays nothing at all.
+          </li>
+          <li>
+            <strong>Swapping down pays too.</strong> {POINTS_PER_KG_SAVED} pts for
+            every kg you avoid versus the dish you searched for, counted up to{" "}
+            {MAX_SAVED_KG_COUNTED} kg.
+          </li>
+          <li>
+            <strong>Streaks compound.</strong> Each consecutive low-impact order
+            adds {Math.round(STREAK_BONUS_PER_ORDER * 100)}% to the payout, up to
+            ×{MAX_STREAK_MULTIPLIER.toFixed(1)}. One medium-impact order resets it.
+          </li>
+          <li>
+            <strong>Tiers stick.</strong> Rank is set by points earned all time,
+            so spending your balance never costs you a tier.
+          </li>
+        </ul>
+
+        <div className="tier-ladder">
+          {TIERS.map((entry) => (
+            <div
+              key={entry.name}
+              className={`tier-rung ${entry.name === tier.name ? "active" : ""} ${rewards.lifetimePoints >= entry.min ? "reached" : ""}`}
+            >
+              <span className="tier-rung-icon">{entry.icon}</span>
+              <span className="tier-rung-name">{entry.name}</span>
+              <span className="tier-rung-min">{formatPoints(entry.min)} pts</span>
+              <span className="tier-rung-perk">{entry.perk}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header"><h3>🧾 Recent activity</h3></div>
+        {activity.length === 0 ? (
+          <p className="empty-note">
+            Nothing yet. Search for something, pick a lower-carbon swap and place
+            the order — the points land on the confirmation screen.
+          </p>
+        ) : (
+          <div className="activity-list">
+            {activity.map((entry, idx) => (
+              <div className="activity-row" key={`${entry.at}-${idx}`}>
+                <div className="activity-body">
+                  <div className="activity-name">
+                    {entry.kind === "earn" ? entry.name : `Redeemed ${entry.name}`}
+                  </div>
+                  <div className="activity-meta">
+                    {entry.kind === "earn"
+                      ? `${entry.savedKg.toFixed(1)} kg CO₂e saved vs ${entry.versus}${entry.venue ? ` • ${entry.venue}` : ""}`
+                      : "Spent from your balance"}
+                    {" • "}
+                    {new Date(entry.at).toLocaleDateString()}
+                  </div>
+                </div>
+                <div className={entry.kind === "earn" ? "activity-earn" : "activity-spend"}>
+                  {entry.kind === "earn" ? `+${formatPoints(entry.points)}` : `−${formatPoints(entry.cost)}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState("home");
   const [filters, setFilters] = useState({});
   const [order, setOrder] = useState(null);
+  const [rewards, setRewards] = useState(loadRewards);
+
+  // One writer for the ledger, so the balance on screen is always the balance
+  // on disk.
+  const updateRewards = (next) => setRewards(saveRewards(next));
+
+  // Returns the receipt synchronously. CheckoutPage renders the confirmation in
+  // the same click and cannot wait for a state update to come back around.
+  const placeOrder = ({ meal, original, restaurant, reward }) => {
+    const earned = pointsForOrder({
+      carbon: meal.carbon,
+      savedKg: original.carbon - meal.carbon,
+      streak: rewards.streak,
+      lifetimePoints: rewards.lifetimePoints
+    });
+    const before = tierFor(rewards.lifetimePoints);
+    const next = applyOrder(rewards, { meal, original, restaurant, reward, earned });
+    updateRewards(next);
+    const after = tierFor(next.lifetimePoints);
+
+    return {
+      earned,
+      balance: next.points,
+      spent: reward ? reward.cost : 0,
+      tierUp: after.name === before.name ? null : after
+    };
+  };
+
+  const redeemReward = (reward) => {
+    // The button is already disabled when you cannot afford it; this is the
+    // guard that keeps the balance honest if it is ever reached another way.
+    if (rewards.points < reward.cost) return;
+    updateRewards(applyRedemption(rewards, reward));
+  };
+
+  if (page === "rewards") {
+    return (
+      <div className="app">
+        <RewardsPage
+          rewards={rewards}
+          onRedeem={redeemReward}
+          onBack={() => setPage("home")}
+        />
+      </div>
+    );
+  }
 
   if (page === "results") {
     return (
       <div className="app">
         <ResultsPage
           filters={filters}
+          rewards={rewards}
           onBack={() => setPage("home")}
           onCheckout={(next) => { setOrder(next); setPage("checkout"); }}
         />
@@ -1411,8 +2011,13 @@ function App() {
       <div className="app">
         <CheckoutPage
           order={order}
+          rewards={rewards}
+          onPlace={placeOrder}
           onBack={() => setPage("results")}
           onDone={() => { setOrder(null); setPage("home"); }}
+          // Clearing the order matters: leaving a placed one behind would let
+          // "Back to results" walk into the review screen and charge it twice.
+          onOpenRewards={() => { setOrder(null); setPage("rewards"); }}
         />
       </div>
     );
@@ -1422,6 +2027,8 @@ function App() {
     <div className="app">
       <HomePage
         initial={filters}
+        rewards={rewards}
+        onOpenRewards={() => setPage("rewards")}
         onSearch={(next) => { setFilters(next); setPage("results"); }}
       />
     </div>

@@ -103,7 +103,7 @@ quietly.
 | File | Role |
 | --- | --- |
 | `index.html` | Entry point, loads React + Babel from CDN, and the Google Maps JS API |
-| `app.js` | Whole frontend: search, results, map, checkout |
+| `app.js` | Whole frontend: search, results, map, checkout, Green Points |
 | `styles.css` | Cream / soft-green theme, all component styles |
 | `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel; `GET /api/place-photo` proxies venue images; `POST /api/food-photos` looks up dish photos on Pexels |
 | `server/.env` | `GOOGLE_PLACES_API_KEY`, `PEXELS_API_KEY`, and `PORT` (gitignored) |
@@ -125,6 +125,56 @@ reordering `INGREDIENT_RULES` or `FORMAT_OVERRIDES`:
   boundary, because plain substring matching silently mis-fires: "chocolate"
   contains "cola", "steak" contains "tea", "eggplant" contains "egg". Longer
   terms stay substrings so compounds like "cheesecake" still match "cheese".
+
+### Green Points
+
+Ordering a swap pays out points, and the **lower the footprint, the more you
+get**. Two earners, both continuous, so there is no cliff where one more gram of
+CO₂e costs you a whole tier:
+
+| Earner | Rule |
+| --- | --- |
+| Low-footprint bonus | 15 pts per kg the meal comes in **under 8.0 kg CO₂e** |
+| Carbon saved | 25 pts per kg avoided versus what you searched for, counted up to 12 kg |
+| Streak | ×1.1 per consecutive *low*-impact order, capped at ×1.5. One medium-impact order resets it |
+| Tier | ×1.0 to ×1.2, by points earned all time |
+
+The 8.0 kg ceiling is deliberate: beef sits at 8.5 and lamb at 20, so the
+meat-heavy end of the catalog earns nothing from its own footprint and has to
+rely on the saving. A berry sorbet at 0.3 kg earns the near-full 116.
+
+The 12 kg cap on savings stops a single lamb-to-sorbet swap paying out ~490
+points and making every order after it feel pointless. When the cap binds, the
+receipt says so (*first 12 kg of 19.5 counted*) rather than silently disagreeing
+with the "19.5 kg saved" figure above it.
+
+Points buy **discounts at checkout** ($2 / $5 / $10 / $20 off) and **perks**
+redeemed from the rewards page (a plant-milk upgrade, a tree planted). Tiers —
+Seedling, Sprout, Sapling, Canopy, Old Growth — are earned on *lifetime* points,
+so spending your balance never demotes you.
+
+Two rules the arithmetic depends on:
+
+- **One formula.** `pointsForOrder` is the only place points are computed, so
+  the `+301 pts` on a results card, the checkout preview and the receipt cannot
+  drift apart.
+- **Spend before earn.** `applyOrder` deducts the voucher first and pays out
+  second, so an order can never be bought with the points it is about to
+  generate.
+
+The ledger lives in `localStorage` under `sustaineat.rewards.v1` — no account,
+no backend. Every read is re-derived field by field, so a corrupt or hand-edited
+entry costs you history rather than rendering `NaN pts` for the rest of the
+demo, and a private window that throws on storage still works in memory.
+
+> Because it is per-browser, clearing site data resets the balance. To demo a
+> full ladder without placing a dozen orders, set the key by hand in the
+> console:
+> ```js
+> localStorage.setItem("sustaineat.rewards.v1", JSON.stringify({
+>   points: 1820, lifetimePoints: 5240, streak: 3, orders: [], redemptions: []
+> }));
+> ```
 
 ### Data sources
 
@@ -182,6 +232,8 @@ never dies on stage:
   only, never a broken image.
 - USDA rate-limited or no match → estimated nutrition for that food.
 - Backend not running → the results page says exactly how to start it.
+- `localStorage` blocked, full or corrupt → the points balance starts from zero
+  for the session instead of throwing; nothing else on the page changes.
 
 ## Demo path that shows the most
 
@@ -198,3 +250,7 @@ never dies on stage:
    options is one pin).
 6. Pick an alternative → **Proceed to Checkout** → **Place order**. The pickup
    location on the receipt is the venue from the card you chose.
+6. The confirmation pays out **Green Points** with the arithmetic shown — and
+   the lower-carbon cards on the way in were already labelled with what each
+   would earn. Place a second order and the **$2 off** reward unlocks; applying
+   it drops the total on the spot and the receipt shows the new balance.
