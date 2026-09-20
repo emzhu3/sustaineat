@@ -1453,6 +1453,19 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   const formatLabel = FORMAT_LABELS[original.format] || FORMAT_LABELS.main;
   const bestAlternative = availableAlternatives[0];
 
+  // The swap panel exists to offer something better. When the food is already
+  // classified low (getCarbonCategory: under 3.0 kg) *and* the catalog turned up
+  // nothing below it, all the panel can say is "no swap needed" — the absence of
+  // a suggestion dressed up as one. Hide it; the "Get X nearby" panel above
+  // already answers what to do with a food that is fine as it is.
+  //
+  // Both halves are load-bearing. category === "low" alone would hide real
+  // savings, because it is a band and not a floor: a 2.8 kg chicken dish counts
+  // as low while the catalog still offers lentils at 0.7. An empty list alone
+  // would hide the "try widening them" hint that a high-carbon food needs when
+  // the diet or budget filters — not the food's own footprint — emptied it.
+  const showLowerCarbonPanel = !(original.category === "low" && alternatives.length === 0);
+
   // What the currently selected swap would pay out, previewed before checkout.
   const selectedEarn = selectedMeal
     ? pointsForOrder({
@@ -1566,6 +1579,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         </section>
       )}
 
+      {showLowerCarbonPanel && (
       <section className="panel">
         <div className="panel-header">
           <h3>💚 Lower-carbon {formatLabel}</h3>
@@ -1749,7 +1763,10 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           )
         )}
       </section>
+      )}
 
+      {/* The map panel is a separate section with its own condition and is
+          deliberately left exactly as it was. */}
       {alternatives.length > 0 && (
       <section className="panel">
         <div className="panel-header">
