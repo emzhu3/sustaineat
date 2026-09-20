@@ -1142,3 +1142,577 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================== rewards === */
+
+/* Points get their own accent so a payout never reads as a carbon figure —
+   the green scale already means "low impact" everywhere else on the page. */
+:root {
+  --points-gold: #b8860b;
+  --points-gold-soft: rgba(184, 134, 11, 0.12);
+  --points-gold-line: rgba(184, 134, 11, 0.35);
+}
+
+/* -- homepage summary card ------------------------------------------------ */
+
+.rewards-summary {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background-color: var(--dark-bg);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 32px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.rewards-summary:hover {
+  border-color: var(--primary-green);
+  box-shadow: var(--shadow);
+}
+
+.rewards-summary-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rewards-summary-tier {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.rewards-summary-points {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--points-gold);
+}
+
+.rewards-summary-cta {
+  font-size: 12px;
+  color: var(--text-light);
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
+/* -- tier progress -------------------------------------------------------- */
+
+.tier-bar {
+  margin-top: 10px;
+}
+
+.tier-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background-color: rgba(107, 168, 127, 0.18);
+  overflow: hidden;
+}
+
+.tier-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary-green), var(--accent-green));
+  transition: width 0.4s ease;
+}
+
+.tier-bar-note {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-top: 6px;
+}
+
+.tier-bar-compact .tier-bar-note {
+  margin-top: 4px;
+}
+
+/* -- earn previews on results --------------------------------------------- */
+
+.results-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* .btn-back carries its own bottom margin for the pages that use it alone. */
+.results-top .btn-back {
+  margin-bottom: 0;
+}
+
+.points-chip {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background-color: var(--points-gold-soft);
+  border: 1px solid var(--points-gold-line);
+  color: var(--points-gold);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.points-pill {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: var(--points-gold-soft);
+  color: var(--points-gold);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.points-pill-muted {
+  background-color: rgba(100, 116, 139, 0.1);
+  color: var(--text-light);
+}
+
+.earn-callout {
+  background-color: var(--points-gold-soft);
+  border: 1px solid var(--points-gold-line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-dark);
+  margin-bottom: 16px;
+}
+
+/* -- points breakdown (checkout preview and receipt) ---------------------- */
+
+.points-breakdown {
+  background-color: var(--dark-bg);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 18px 0;
+  text-align: left;
+}
+
+.points-breakdown-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-light);
+  margin-bottom: 10px;
+}
+
+.points-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text-dark);
+  padding: 3px 0;
+}
+
+.points-line-mult {
+  color: var(--text-light);
+  font-size: 13px;
+}
+
+.points-line-note {
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+.points-line-total {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+  font-weight: 700;
+  color: var(--points-gold);
+  font-size: 16px;
+}
+
+/* -- redeeming at checkout ------------------------------------------------ */
+
+.reward-apply {
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+
+.reward-apply-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.reward-apply-balance {
+  font-weight: 600;
+  color: var(--points-gold);
+  font-size: 13px;
+}
+
+.reward-apply-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.reward-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background-color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.reward-option:hover:not(:disabled) {
+  border-color: var(--primary-green);
+}
+
+.reward-option.active {
+  border-color: var(--accent-green);
+  background-color: rgba(107, 168, 127, 0.12);
+}
+
+.reward-option:disabled,
+.reward-option.locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reward-option-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.reward-option-cost {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.order-name-discount {
+  color: var(--accent-green);
+}
+
+.price-discount {
+  color: var(--accent-green);
+}
+
+/* -- confirmation extras -------------------------------------------------- */
+
+.tier-up {
+  background-color: rgba(107, 168, 127, 0.16);
+  border: 1px solid rgba(107, 168, 127, 0.45);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+  color: var(--text-dark);
+}
+
+.balance-line {
+  font-size: 14px;
+  color: var(--text-dark);
+  margin-bottom: 18px;
+}
+
+.balance-spent {
+  color: var(--text-light);
+  font-size: 13px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.confirm-actions .btn {
+  width: auto;
+  min-width: 170px;
+}
+
+.btn-secondary {
+  background-color: #ffffff;
+  color: var(--text-dark);
+  border: 1px solid var(--border-light);
+}
+
+.btn-secondary:hover {
+  border-color: var(--primary-green);
+}
+
+.btn-small {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 13px;
+  background-color: var(--primary-green);
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+.btn-small:hover:not(:disabled) {
+  background-color: var(--accent-green);
+}
+
+.btn-small:disabled {
+  background-color: #e2e8f0;
+  color: var(--text-light);
+  cursor: not-allowed;
+}
+
+/* -- rewards page --------------------------------------------------------- */
+
+.rewards-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.rewards-hero {
+  text-align: left;
+}
+
+.rewards-balance {
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--points-gold);
+}
+
+.rewards-balance-label {
+  font-size: 13px;
+  color: var(--text-light);
+  margin-top: 2px;
+}
+
+.rewards-tier-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.rewards-tier-perk {
+  font-size: 13px;
+  color: var(--text-light);
+}
+
+.reward-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.reward-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background-color: #ffffff;
+}
+
+.reward-card-locked {
+  background-color: var(--dark-bg);
+}
+
+.reward-card-locked .reward-icon,
+.reward-card-locked .reward-name {
+  opacity: 0.65;
+}
+
+.reward-icon {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.reward-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.reward-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.reward-detail {
+  font-size: 12px;
+  color: var(--text-light);
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.reward-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  text-align: right;
+}
+
+.reward-cost {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--points-gold);
+  white-space: nowrap;
+}
+
+.reward-hint {
+  font-size: 11px;
+  color: var(--text-light);
+  white-space: nowrap;
+}
+
+.points-rules {
+  list-style: none;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.points-rules li {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-light);
+  padding-left: 14px;
+  border-left: 3px solid rgba(107, 168, 127, 0.4);
+}
+
+.points-rules strong {
+  color: var(--text-dark);
+}
+
+.tier-ladder {
+  display: grid;
+  gap: 6px;
+}
+
+.tier-rung {
+  display: grid;
+  grid-template-columns: 28px 110px 90px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background-color: var(--dark-bg);
+  opacity: 0.55;
+}
+
+.tier-rung.reached {
+  opacity: 1;
+}
+
+.tier-rung.active {
+  border-color: var(--accent-green);
+  background-color: rgba(107, 168, 127, 0.12);
+}
+
+.tier-rung-icon {
+  font-size: 18px;
+}
+
+.tier-rung-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.tier-rung-min {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--points-gold);
+}
+
+.tier-rung-perk {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+/* -- activity ledger ------------------------------------------------------ */
+
+.activity-list {
+  display: grid;
+  gap: 2px;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.activity-row:last-child {
+  border-bottom: none;
+}
+
+.activity-body {
+  min-width: 0;
+}
+
+.activity-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.activity-meta {
+  font-size: 12px;
+  color: var(--text-light);
+  line-height: 1.4;
+}
+
+.activity-earn {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--points-gold);
+  white-space: nowrap;
+}
+
+.activity-spend {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-light);
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .tier-rung {
+    grid-template-columns: 24px 1fr auto;
+  }
+
+  /* The perk text wraps to its own row rather than squeezing the name. */
+  .tier-rung-perk {
+    grid-column: 2 / -1;
+  }
+
+  .confirm-actions .btn {
+    width: 100%;
+  }
+}
