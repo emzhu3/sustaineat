@@ -13,11 +13,16 @@ app.use(express.json());
 // The frontend must be served over http: Babel fetches app.js via XHR, which
 // file:// blocks, and geolocation needs a secure context. Serving it from here
 // means one command and one origin for the whole demo.
-app.use('/server', (req, res) => res.status(404).end()); // never expose .env
-// The static root is the repo root, so the dev folder would be public too --
-// and its app.js.*.bak copies still carry the USDA key that lives in app.js.
-// Rotating that key is worthless while these stay fetchable.
-app.use('/verification', (req, res) => res.status(404).end());
+// The static root is the repo root, so everything beside index.html is public
+// by default: server sources and .env, the dev folder, the dependency tree and
+// the manifests that name it. Only three files are actually meant to be served.
+//
+// Vercel's CDN answers static paths before this process ever sees them, so it
+// cannot enforce any of this -- vercel.json repeats the denials for that host.
+for (const secret of ['/server', '/verification', '/node_modules']) {
+  app.use(secret, (req, res) => res.status(404).end());
+}
+app.get(['/package.json', '/package-lock.json'], (req, res) => res.status(404).end());
 app.use(express.static(path.join(__dirname, '..'), { dotfiles: 'deny' }));
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
@@ -673,23 +678,34 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'Backend is running', placesCache: placesCache.summary() });
 });
 
-app.listen(PORT, () => {
-  // PORT is injected by the host in production, where "localhost" would be a
-  // lie in the logs. Only claim a browsable URL when we picked the port.
-  console.log(process.env.PORT
-    ? `SustainEat backend listening on port ${PORT}`
-    : `SustainEat backend running on http://localhost:${PORT}`);
-  const cache = placesCache.summary();
-  console.log(cache.enabled
-    ? `Places cache on — ${cache.entries} entries, ${cache.ttlHours}h TTL (PLACES_CACHE=off to disable)`
-    : 'Places cache OFF — every search will be billed');
-});
-
-// Debounced writes mean the last few searches may not be on disk yet. Flush on
-// the way out so a Ctrl+C between rehearsals does not throw them away.
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    placesCache.flush();
-    process.exit(0);
+// Bind a port only when this file is the program. A serverless host (Vercel)
+// imports the module instead and owns the lifecycle itself: there is no port to
+// listen on, and a stray listen() would hold the invocation open. `node
+// server.js` locally and `npm start` on a long-lived host are unaffected.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    // PORT is injected by the host in production, where "localhost" would be a
+    // lie in the logs. Only claim a browsable URL when we picked the port.
+    console.log(process.env.PORT
+      ? `SustainEat backend listening on port ${PORT}`
+      : `SustainEat backend running on http://localhost:${PORT}`);
+    const cache = placesCache.summary();
+    console.log(cache.enabled
+      ? `Places cache on — ${cache.entries} entries, ${cache.ttlHours}h TTL (PLACES_CACHE=off to disable)`
+      : 'Places cache OFF — every search will be billed');
   });
+
+  // Debounced writes mean the last few searches may not be on disk yet. Flush on
+  // the way out so a Ctrl+C between rehearsals does not throw them away.
+  // Serverless has no such shutdown to hook, which is why this lives in here.
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      placesCache.flush();
+      process.exit(0);
+    });
+  }
 }
+
+// The handler Vercel's api/index.js re-exports. An Express app is already a
+// (req, res) function, so it needs no adapter.
+module.exports = app;

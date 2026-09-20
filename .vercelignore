@@ -1,0 +1,26 @@
+# Vercel uploads the working directory, and unlike git it does not treat
+# .gitignore as authoritative -- `vercel` from a local checkout will happily
+# ship a file git has never seen. server/.env is exactly that file, so it is
+# listed first and explicitly.
+#
+# For a zero-config project anything uploaded is also a candidate for static
+# serving, so this list is a security boundary, not just an upload optimisation.
+# vercel.json repeats the important denials as routes, in case a file has to be
+# uploaded anyway.
+
+.env
+server/.env
+server/.cache
+
+# Installed by Vercel from package.json; uploading them is waste.
+node_modules
+server/node_modules
+
+# Dev-only puppeteer harness and its screenshots. Not needed at runtime.
+verification
+
+.git
+*.log
+
+# NOTE: server/ itself must NOT be ignored -- api/index.js requires
+# server/server.js, and Vercel traces that import to build the function.

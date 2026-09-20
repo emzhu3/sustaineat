@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    { "src": "/server/(.*)", "status": 404 },
+    { "src": "/verification/(.*)", "status": 404 },
+    { "src": "/node_modules/(.*)", "status": 404 },
+    { "src": "/package(-lock)?\\.json", "status": 404 },
+    { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "handle": "filesystem" }
+  ]
+}
