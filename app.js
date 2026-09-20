@@ -191,6 +191,87 @@ function getCarbonScore(ingredient) {
   return INGREDIENT_CARBON[ingredient] || 2.0;
 }
 
+/* --------------------------------------------------------- price guess ---- */
+
+// No API will tell us what a given restaurant charges for a given dish, and
+// scraping menus is not something to rely on, so the price shown for the
+// searched food is an estimate. It is calibrated against the prices already
+// carried by ALTERNATIVE_CATALOG, so a searched food and the swaps it is
+// compared against are quoted on the same scale rather than two.
+//
+// Recognised dishes win, because "ramen" is a soup by format but is priced like
+// a main, and a salad is a main by format but is not priced like one. Anything
+// unrecognised falls back to format + ingredient, which is roughly how the
+// catalog's own numbers line up: a lentil main at 9.0, chicken at 12.0, fish at
+// 14.0.
+const DISH_PRICES = [
+  { price: 22.0, match: ["steak", "ribeye", "sirloin", "filet mignon", "prime rib"] },
+  { price: 16.0, match: ["lobster", "crab"] },
+  { price: 15.0, match: ["sushi", "sashimi", "salmon", "shrimp", "seafood"] },
+  { price: 13.5, match: ["ramen", "pho", "udon", "soba", "noodle bowl", "laksa", "poke"] },
+  { price: 12.5, match: ["pasta", "spaghetti", "lasagna", "linguine", "fettuccine", "risotto"] },
+  { price: 12.0, match: ["pizza", "curry", "tikka", "pad thai", "bibimbap"] },
+  { price: 11.5, match: ["burger", "cheeseburger", "hamburger", "whopper", "big mac"] },
+  { price: 11.0, match: ["burrito", "fried chicken", "wings", "dal", "daal", "stir fry"] },
+  { price: 10.0, match: ["bowl", "platter", "gyro", "shawarma", "quesadilla"] },
+  { price: 9.5,  match: ["sandwich", "wrap", "sub", "panini", "banh mi", "taco"] },
+  { price: 9.0,  match: ["salad"] },
+  { price: 7.5,  match: ["soup", "chowder", "bisque", "stew", "chili"] },
+  { price: 6.5,  match: ["bagel", "toast", "croissant", "muffin", "pastry", "donut", "doughnut"] },
+  { price: 5.5,  match: ["smoothie", "juice", "milkshake", "boba", "bubble tea"] },
+  { price: 4.5,  match: ["coffee", "latte", "cappuccino", "espresso", "tea", "cold brew", "soda"] }
+];
+
+const FORMAT_BASE_PRICE = { main: 10.5, soup: 8.5, breakfast: 7.5, dessert: 6.0, drink: 4.5 };
+
+// What the headline ingredient does to that base. Animal protein costs more
+// than pulses on more or less every menu.
+const INGREDIENT_PRICE_DELTA = {
+  lamb: 6.0, beef: 3.0, shrimp: 3.5, fish: 3.5, pork: 1.5, chicken: 1.5,
+  turkey: 1.0, cheese: 0.0, chocolate: 0.5, dairy: 0.0, pastry: 0.0,
+  eggs: -0.5, grains: -0.5, soy: -0.5, tofu: -0.5, beans: 0.0, nuts: 0.5,
+  lentils: -1.5, oat: -1.0, vegetable: -1.0, fruit: -1.0, beverage: -0.5
+};
+
+// A one-word produce search is a grocery item, not a plated dish. Without this
+// "banana" classifies as a main and is quoted at $9.50. Deliberately matched
+// only when the query is that single word, so "banana bread" and "apple pie"
+// keep their dish pricing.
+const WHOLE_PRODUCE = [
+  "banana", "apple", "orange", "pear", "grape", "grapes", "peach", "plum", "mango",
+  "strawberry", "strawberries", "blueberry", "blueberries", "raspberry", "cherry",
+  "cherries", "apricot", "kiwi", "nectarine", "melon", "watermelon", "pineapple",
+  "lemon", "lime", "avocado", "carrot", "carrots", "cucumber", "celery", "tomato",
+  "broccoli", "spinach", "kale", "lettuce", "potato"
+];
+
+function estimatePrice({ query, name, format, ingredient }) {
+  const typed = String(query || "").trim().toLowerCase();
+  const words = typed.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && WHOLE_PRODUCE.includes(words[0])) return 1.49;
+
+  // The typed query first: it is what the person meant, where the USDA name can
+  // be "Soup, Ramen Noodle, Beef Flavor, Dry".
+  const haystack = `${query || ""} ${name || ""}`.toLowerCase();
+
+  let price = null;
+  for (const rule of DISH_PRICES) {
+    if (ruleHits(rule, haystack)) { price = rule.price; break; }
+  }
+
+  if (price === null) {
+    const base = FORMAT_BASE_PRICE[format] != null ? FORMAT_BASE_PRICE[format] : FORMAT_BASE_PRICE.main;
+    const delta = INGREDIENT_PRICE_DELTA[ingredient] || 0;
+    price = base + delta;
+  }
+
+  // Nothing on a pickup menu is under $3 or over $30, and an estimate that
+  // wanders outside that reads as a bug rather than a guess.
+  price = Math.min(30, Math.max(3, price));
+  // .49/.99 endings are what menus actually look like; a flat .00 reads fake.
+  return Math.round(price * 2) / 2 - 0.01;
+}
+
 function getCarbonCategory(score) {
   if (score >= 6) return "high";
   if (score >= 3) return "medium";
@@ -1286,7 +1367,14 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         format: foodData.format || "main",
         servingGrams: foodData.servingGrams,
         source: foodData.source,
-        price: 12.0
+        // Estimated, not quoted: see estimatePrice. Only the low-impact order
+        // button reads this — swaps carry their own catalog prices.
+        price: estimatePrice({
+          query: filters.query,
+          name: foodData.name,
+          format: foodData.format || "main",
+          ingredient: foodData.ingredient
+        })
       };
 
       const suggested = generateAlternatives(original, filters);
