@@ -240,6 +240,11 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
         'places.userRatingCount',
         'places.priceLevel',
         'places.googleMapsUri',
+        // The venue's own site, which is the only per-business ordering link
+        // that can be had without guessing. Pro-tier field, and this request is
+        // already billed at Enterprise + Atmosphere for reviews below, so it
+        // costs nothing extra.
+        'places.websiteUri',
         'places.photos',
         // Enterprise + Atmosphere SKU. Drop this line to halve the bill and
         // fall back to category-only matching.
@@ -270,6 +275,9 @@ async function placesSearch(textQuery, latitude, longitude, miles, maxDistanceFa
       reviewCount: place.userRatingCount || 0,
       priceLevel: PRICE_LEVEL_SYMBOLS[place.priceLevel] || null,
       mapsUrl: place.googleMapsUri || null,
+      // Often the venue's ordering page. Null for plenty of places, which the
+      // UI treats as "no ordering link" rather than inventing one.
+      website: place.websiteUri || null,
       photo: firstPhoto(place.photos),
       distance: calculateDistance(latitude, longitude, place.location.latitude, place.location.longitude),
       _reviews: (place.reviews || [])

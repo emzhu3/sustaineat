@@ -1120,10 +1120,17 @@ body {
   line-height: 1.4;
 }
 
-/* .btn is sized for a full-width primary action; this one rides in a list row. */
-.pickup-action {
+/* A venue has one or two actions depending on whether Places knew its site. */
+.pickup-actions {
   flex-shrink: 0;
   align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* .btn is sized for a full-width primary action; these ride in a list row. */
+.pickup-action {
   padding: 8px 14px;
   font-size: 13px;
   text-decoration: none;
@@ -1131,13 +1138,97 @@ body {
   white-space: nowrap;
 }
 
+/* .btn-primary is width:100% for the checkout button it was written for. */
+.pickup-action.btn-primary {
+  width: auto;
+}
+
+/* Deliberately not buttons. These open a search for the venue's name on a
+   delivery platform; nothing verifies the place is actually on it. Making them
+   quiet text links keeps that distinction visible next to the two links above,
+   which do belong to this business. */
+.pickup-search-row {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.pickup-search {
+  font-size: 11px;
+  color: var(--text-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.pickup-search:hover {
+  color: var(--accent-green);
+}
+
+/* -- earning on a food that was already low impact ------------------------ */
+
+.low-impact-claim {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background-color: var(--points-gold-soft);
+  border: 1px solid var(--points-gold-line);
+}
+
+.low-impact-claim-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dark);
+}
+
+.low-impact-claim-btn {
+  flex-shrink: 0;
+  width: auto;
+  padding: 9px 16px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.low-impact-claim-btn:disabled {
+  background-color: var(--border-light);
+  color: var(--text-light);
+  cursor: default;
+}
+
+/* Claimed is a receipt, not a call to action: drop it back to a quiet note. */
+.low-impact-claim.claimed {
+  background-color: var(--dark-bg);
+  border-color: var(--border-light);
+}
+
 @media (max-width: 560px) {
-  .pickup-action {
+  .low-impact-claim {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .low-impact-claim-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .pickup-actions {
     width: 100%;
     margin-top: 4px;
   }
 
-  /* Wrap the button onto its own line rather than squeezing the address. */
+  .pickup-action {
+    width: 100%;
+  }
+
+  /* Wrap the buttons onto their own line rather than squeezing the address. */
   .pickup-row {
     flex-wrap: wrap;
   }
