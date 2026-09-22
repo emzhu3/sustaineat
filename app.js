@@ -585,13 +585,24 @@ function matchesDiet(item, diet) {
   return false;
 }
 
-function generateAlternatives(original, { diet, budget, query }) {
+// carbonByName carries the ingredient-level estimates from /api/carbon-estimate,
+// keyed by catalog name. It is all-or-nothing by design: the backend either
+// scores the searched food and every candidate together or returns nothing, so
+// a swap is never compared across the two methods.
+function generateAlternatives(original, { diet, budget, query }, carbonByName = {}) {
   const words = queryTokens(query);
   const originalCarbon = original.carbon;
   const format = original.format || "main";
 
   const candidates = ALTERNATIVE_CATALOG
-    .map((item) => ({ ...item, carbon: getCarbonScore(item.ingredient) }))
+    .map((item) => {
+      const estimate = carbonByName[item.name];
+      return {
+        ...item,
+        carbon: estimate ? estimate.carbonKg : getCarbonScore(item.ingredient),
+        carbonEstimate: estimate || null
+      };
+    })
     // Only ever swap a dessert for a dessert, a drink for a drink.
     .filter((item) => item.format === format)
     .filter((item) => item.carbon < originalCarbon)
@@ -647,6 +658,7 @@ function generateAlternatives(original, { diet, budget, query }) {
     format: item.format,
     carbon: item.carbon,
     category: getCarbonCategory(item.carbon),
+    carbonEstimate: item.carbonEstimate,
     price: item.price,
     calories: item.calories,
     protein: item.protein,
@@ -924,6 +936,10 @@ function categoryLabel(placesQuery) {
 // key off their numeric catalog id, so a non-numeric key cannot collide.
 const PICKUP_KEY = "searched-food";
 
+// The searched food's id in a carbon-estimate request. Catalog dishes use their
+// names, which never collide with this.
+const SEARCHED_DISH_ID = "__searched__";
+
 // The searched food is not in the catalog, so unlike an alternative it has no
 // placesQuery or dishTerms of its own. Build them from what the user actually
 // typed: the USDA name can come back as "Soup, Ramen Noodle, Beef Flavor, Dry",
@@ -933,6 +949,31 @@ const PICKUP_KEY = "searched-food";
 function pickupQueryForSearch(query, foodName) {
   const label = String(query || "").trim() || String(foodName || "").trim() || "food";
   return { placesQuery: `${label} restaurant`, dishTerms: [label.toLowerCase()] };
+}
+
+// Ingredient-level CO2e for the searched food and its candidate swaps, in one
+// request. Resolves to null on any failure — no key, a timeout, a bad reply —
+// because the ingredient table is always there to fall back on. The abort
+// sits just above the backend's own 25 s model timeout.
+const CARBON_ESTIMATE_TIMEOUT_MS = 28000;
+
+async function fetchCarbonEstimate(dishes, latitude, longitude) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CARBON_ESTIMATE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/carbon-estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dishes, latitude, longitude }),
+      signal: controller.signal
+    });
+    if (!response.ok) return { ok: false, reason: `http-${response.status}` };
+    return await response.json();
+  } catch (err) {
+    return { ok: false, reason: err.name === "AbortError" ? "timeout" : "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // One targeted Places search per alternative. An alternative is only offered
@@ -999,6 +1040,52 @@ function SustainabilityBadge({ carbon, category }) {
     <div className={`sustainability-badge ${categoryClass}`}>
       <div className="badge-value">{carbon.toFixed(1)} kg CO₂e</div>
       <div className="badge-label">{category.toUpperCase()} IMPACT</div>
+    </div>
+  );
+}
+
+// How the badge's number was arrived at, always stated. An ingredient-level
+// estimate shows its working — every line is grams × a published per-kg factor,
+// so a reader can check it; the category estimate says plainly that it is one.
+function CarbonBreakdown({ estimate }) {
+  const [open, setOpen] = useState(false);
+
+  if (!estimate) {
+    return (
+      <div className="carbon-method">
+        Category estimate — based on the main ingredient, not the full recipe.
+      </div>
+    );
+  }
+
+  const rows = estimate.breakdown || [];
+  const shown = open ? rows : rows.slice(0, 3);
+  return (
+    <div className="carbon-breakdown">
+      <div className="carbon-method">
+        Estimated from ingredients · per {estimate.servingGrams} g serving
+        {estimate.confidence === "low" ? " · low confidence (dish could vary a lot)" : ""}
+      </div>
+      <ul className="carbon-rows">
+        {shown.map((row, idx) => (
+          <li className="carbon-row" key={`${row.category}-${idx}`}>
+            <span className="carbon-row-name">{row.name}</span>
+            <span className="carbon-row-math">
+              {row.grams} g × {row.kgPerKg} kg/kg
+            </span>
+            <span className="carbon-row-kg">{row.kg.toFixed(2)} kg</span>
+          </li>
+        ))}
+      </ul>
+      {rows.length > 3 && (
+        <button type="button" className="carbon-toggle" onClick={() => setOpen(!open)}>
+          {open ? "Show less" : `Show all ${rows.length} ingredients`}
+        </button>
+      )}
+      {estimate.locationNote && <div className="carbon-note">📍 {estimate.locationNote}</div>}
+      <div className="carbon-source">
+        Factors: Poore &amp; Nemecek (2018), farm to retail. Cooking energy not included.
+      </div>
     </div>
   );
 }
@@ -1377,7 +1464,43 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         })
       };
 
-      const suggested = generateAlternatives(original, filters);
+      // Replace the category estimate with an ingredient-level one. The whole
+      // format's catalog goes in the same request, so the searched food and
+      // every swap it might be compared against are scored on one scale. The
+      // backend caches catalog dishes across searches, so after the first
+      // search of a format only the searched food costs a model call.
+      const formatCatalog = ALTERNATIVE_CATALOG.filter((item) => item.format === original.format);
+      const carbonReply = await fetchCarbonEstimate(
+        [
+          {
+            id: SEARCHED_DISH_ID,
+            name: original.name,
+            query: filters.query,
+            servingGrams: original.servingGrams,
+            format: original.format
+          },
+          ...formatCatalog.map((item) => ({ id: item.name, name: item.name, format: item.format }))
+        ],
+        filters.latitude,
+        filters.longitude
+      );
+
+      const carbonByName = {};
+      if (carbonReply && carbonReply.ok && carbonReply.results && carbonReply.results[SEARCHED_DISH_ID]) {
+        const mine = carbonReply.results[SEARCHED_DISH_ID];
+        original.carbon = mine.carbonKg;
+        original.category = getCarbonCategory(mine.carbonKg);
+        original.carbonEstimate = mine;
+        for (const item of formatCatalog) {
+          if (carbonReply.results[item.name]) carbonByName[item.name] = carbonReply.results[item.name];
+        }
+      } else if (carbonReply && carbonReply.reason && carbonReply.reason !== "no-key") {
+        // No key is a configuration choice and the badge already says which
+        // method it used. A timeout or a failed call is worth a word.
+        notes.push("Couldn't get an ingredient-level CO₂e estimate this time — showing the category estimate instead.");
+      }
+
+      const suggested = generateAlternatives(original, filters, carbonByName);
 
       // Where to get the searched food itself. Only worth asking when it is
       // already low-carbon: above that, the point of the page is the swap.
@@ -1487,7 +1610,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         <button className="btn btn-back" onClick={onBack}>← Back</button>
         <div className="loading-block">
           <div className="spinner" />
-          <p>Checking nutrition data and finding restaurants near you…</p>
+          <p>Checking nutrition, estimating emissions from ingredients and finding restaurants near you…</p>
         </div>
       </div>
     );
@@ -1620,6 +1743,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         </div>
 
         <SustainabilityBadge carbon={original.carbon} category={original.category} />
+        <CarbonBreakdown estimate={original.carbonEstimate} />
         <NutritionGrid meal={original} />
       </section>
 
@@ -1988,6 +2112,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
         <section className="panel details-panel slide-in">
           <h3>{selected.name}</h3>
           <SustainabilityBadge carbon={selected.carbon} category={selected.category} />
+          <CarbonBreakdown estimate={selected.carbonEstimate} />
           <NutritionGrid meal={selected} />
 
           <div className="impact-ledger">

@@ -76,6 +76,24 @@ source. That is fine for a demo — a USDA key is free and only gates rate limit
 — but do not reuse the pattern for a secret that matters. Those belong in
 `server/.env`, like the Google key.
 
+### 5. Anthropic key — optional, for ingredient-level CO₂e
+
+Add `ANTHROPIC_API_KEY=` to `server/.env` (and to the Vercel project's
+environment variables, then redeploy). With it, `POST /api/carbon-estimate`
+asks Claude Opus 5 to break the searched food — and every catalog dish it could
+be swapped for — into ingredients and grams, in one structured call. The server
+then multiplies each ingredient by a Poore & Nemecek (2018) per-kg factor from
+`server/carbon-agent.js` and adds them up. The model never supplies the total,
+and the results page shows the working line by line.
+
+Location and month are passed as context only: they can change what a dish is
+assumed to contain, never the arithmetic. Catalog results are cached in memory
+for 24 h, so after the first search of a course only the searched food costs a
+call.
+
+Without the key, nothing breaks: every figure falls back to the built-in
+ingredient table and the badge says "Category estimate".
+
 ### 4. Pexels key — done ✅
 
 Each alternative card shows a photo of the dish, searched on Pexels by food
@@ -112,7 +130,7 @@ quietly.
 | `styles.css` | Cream / soft-green theme, all component styles |
 | `server/server.js` | Express: serves the frontend, proxies Google Places. `POST /api/alternatives-nearby` runs one Places search per suggested food in parallel; `GET /api/place-photo` proxies venue images; `POST /api/food-photos` looks up dish photos on Pexels |
 | `server/places-cache.js` | Disk-backed cache for Places responses, so repeat searches are free and offline-safe |
-| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PEXELS_API_KEY`,, `PORT`, and optionally `PLACES_CACHE` / `PLACES_CACHE_TTL_HOURS` (gitignored) |
+| `server/.env` | `GOOGLE_PLACES_API_KEY`, `PEXELS_API_KEY`, `ANTHROPIC_API_KEY` (optional), `PORT`, and optionally `PLACES_CACHE` / `PLACES_CACHE_TTL_HOURS` (gitignored) |
 
 ### Food formats
 

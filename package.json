@@ -8,6 +8,7 @@
   },
   "comment": "express/cors/dotenv are duplicated from server/package.json on purpose. Vercel installs from THIS manifest and traces api/index.js -> server/server.js, so the function cannot resolve them from server/node_modules. Keep the two in step; server/package.json remains the source of truth for `npm start` in server/.",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2"

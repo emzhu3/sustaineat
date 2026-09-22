@@ -337,6 +337,102 @@ body {
   color: var(--text-dark);
 }
 
+/* -- how the CO2e figure was worked out --------------------------------- */
+
+/* Sits between the badge and the nutrition strip. The badge's own 20px bottom
+   margin is pulled in so the breakdown reads as the badge's footnote rather
+   than a separate section. */
+.sustainability-badge + .carbon-method,
+.sustainability-badge + .carbon-breakdown {
+  margin-top: -12px;
+}
+
+.carbon-method {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-bottom: 14px;
+}
+
+.carbon-breakdown .carbon-method {
+  margin-bottom: 6px;
+}
+
+.carbon-breakdown {
+  margin-bottom: 14px;
+}
+
+.carbon-rows {
+  list-style: none;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.carbon-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-light);
+  background-color: var(--dark-bg);
+}
+
+.carbon-row:last-child {
+  border-bottom: none;
+}
+
+.carbon-row-name {
+  color: var(--text-dark);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.carbon-row-math {
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.carbon-row-kg {
+  font-weight: 600;
+  color: var(--text-dark);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 56px;
+}
+
+.carbon-toggle {
+  margin-top: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: var(--accent-green);
+  cursor: pointer;
+}
+
+.carbon-note,
+.carbon-source {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-light);
+  line-height: 1.4;
+}
+
+@media (max-width: 420px) {
+  /* The "150 g × 1.57 kg/kg" column is the first thing to go on a phone. */
+  .carbon-row {
+    grid-template-columns: 1fr auto;
+  }
+  .carbon-row-math {
+    display: none;
+  }
+}
+
 /* One row of four, not a 2x2 of spaced boxes: the four figures are meant to be
    read across in a glance, and the old stacked layout cost ~60px of height on a
    page that already has to fit a badge, a ledger and the swap grid above the

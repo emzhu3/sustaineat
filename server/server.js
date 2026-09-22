@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 const { PlacesCache } = require('./places-cache');
+const { estimateCarbon, AgentUnavailableError } = require('./carbon-agent');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -680,6 +681,36 @@ app.post('/api/food-photos', async (req, res) => {
     configured: Boolean(PEXELS_API_KEY),
     photos
   });
+});
+
+/* ------------------------------------------------------ carbon estimate --- */
+
+// Optional, like Pexels: without a key the frontend keeps its ingredient-table
+// estimate, so a missing key degrades the numbers rather than the app.
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.warn('NOTE: ANTHROPIC_API_KEY not set — carbon figures will use the built-in ingredient table instead of the ingredient-level estimate.');
+}
+
+// Scores the searched food and its candidate swaps in one call, so every
+// number on the results page comes from the same method.
+app.post('/api/carbon-estimate', async (req, res) => {
+  const { dishes, latitude, longitude } = req.body || {};
+  if (!Array.isArray(dishes) || dishes.length === 0) {
+    return res.status(400).json({ error: 'dishes[] required' });
+  }
+
+  try {
+    const estimate = await estimateCarbon({ dishes, latitude, longitude });
+    res.json({ ok: true, source: 'agent', ...estimate });
+  } catch (err) {
+    // Always a 200: the page has a working fallback, and a failed estimate is
+    // an expected state rather than a broken request.
+    if (err instanceof AgentUnavailableError) {
+      return res.json({ ok: false, reason: err.reason });
+    }
+    console.error('Carbon estimate failed:', err.message);
+    res.json({ ok: false, reason: 'agent-failed', detail: err.message });
+  }
 });
 
 app.get('/api/health', (req, res) => {
