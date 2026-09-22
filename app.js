@@ -1476,7 +1476,11 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
             id: SEARCHED_DISH_ID,
             name: original.name,
             query: filters.query,
-            servingGrams: original.servingGrams,
+            // 100 g is servingGrams' floor and USDA's nutrient basis, not a
+            // portion anyone orders. Passed on, it had the model size ramen at
+            // 100 g while every catalog soup got a full bowl. Only a real
+            // measure (a 270 g Whopper) is worth sending.
+            ...(original.servingGrams > 100 ? { servingGrams: original.servingGrams } : {}),
             format: original.format
           },
           ...formatCatalog.map((item) => ({ id: item.name, name: item.name, format: item.format }))
@@ -1757,9 +1761,14 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           </div>
 
           <p className="pickup-intro">
-            At {original.carbon.toFixed(1)} kg CO₂e this is already a low-emissions choice, so
-            there is no swap to recommend. These are places within {filters.distance} mi that
-            came back for “{filters.query}”.
+            {/* Low impact is a band, not a floor: ingredient-level estimates
+                can put a low-impact dish above a few catalog swaps, and saying
+                "no swap" above a panel of them would contradict the page. */}
+            At {original.carbon.toFixed(1)} kg CO₂e this is already a low-emissions choice
+            {alternatives.length === 0
+              ? ", so there is no swap to recommend."
+              : " — order it as it is, or see the even lower options below."}{" "}
+            These are places within {filters.distance} mi that came back for “{filters.query}”.
           </p>
 
           {pickup.status === "error" ? (

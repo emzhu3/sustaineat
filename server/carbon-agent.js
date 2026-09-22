@@ -73,11 +73,13 @@ const CATEGORIES = Object.keys(EMISSION_FACTORS);
 
 const SYSTEM_PROMPT = `You estimate what restaurant and takeout dishes are made of, so their carbon footprint can be computed from their ingredients.
 
-For each dish you are given, list its ingredients as served in one typical portion from a US restaurant or takeout counter — or in the stated serving size, when one is given. For each ingredient give a short name, the grams in that portion, and the emission category it belongs to, chosen from the category list below.
+For each dish you are given, list the ingredients that go into one typical portion from a US restaurant or takeout counter — or into the stated serving size, when one is given. For each ingredient give a short name, its grams, and the emission category it belongs to, chosen from the category list below.
 
 The number is computed from your breakdown, so the breakdown is what matters:
 - Include everything that moves the total: meat and fish, dairy, eggs, cooking oil, sugar, and what a broth or sauce is made from (a pork-bone ramen broth contributes pork; a cream sauce contributes milk or cheese).
-- Grams should be realistic for the portion and should sum to roughly the serving size. Count liquids at about 1 g per ml, and count a broth by its ingredient mass rather than its water.
+- Give grams as the product is bought, not as it is served, because the emission factors are per kg of retail product: dry weight for pasta, noodles, rice, grains and pulses (cooked lentils or rice are roughly 60-70% absorbed water); raw weight for meat and fish. Name the ingredient accordingly, e.g. "dry lentils".
+- For a broth or stock, count the ingredients that go into the pot per portion, not the water, and count bones at a fraction of their weight: bones carry little of the animal's footprint compared with meat.
+- serving_grams is the plated portion. It will not equal the sum of the purchase weights, and does not need to.
 - Pick the closest category. Use beef_beef_herd for burgers, steak and ground beef unless the dish is clearly from dairy cattle. Spices, herbs and water can be left out.
 - Do not calculate a total. Do not add a margin.
 
@@ -127,7 +129,9 @@ const OUTPUT_SCHEMA = {
 
 // Stays under Vercel's 30 s function limit with room to answer.
 const REQUEST_TIMEOUT_MS = 25000;
-const MAX_DISHES_PER_CALL = 16;
+const MAX_DISHES_PER_REQUEST = 16;
+// Measured live: one dish takes ~4-7 s, and 7 in one request ~17 s.
+const DISHES_PER_BATCH = 3;
 const MAX_INGREDIENT_GRAMS = 2000;
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -290,7 +294,7 @@ async function callModel(dishes, latitude, longitude) {
 async function estimateCarbon({ dishes, latitude, longitude }) {
   const requested = (dishes || [])
     .filter((dish) => dish && dish.id != null && dish.name)
-    .slice(0, MAX_DISHES_PER_CALL)
+    .slice(0, MAX_DISHES_PER_REQUEST)
     .map((dish) => ({ ...dish, id: String(dish.id) }));
   if (!requested.length) throw new Error('no dishes to estimate');
 
@@ -304,9 +308,19 @@ async function estimateCarbon({ dishes, latitude, longitude }) {
 
   let model = null;
   if (missing.length) {
-    const reply = await callModel(missing, latitude, longitude);
-    model = reply.model;
-    const fresh = validate(reply.parsed, missing);
+    // Small batches in parallel rather than one long call. Output time grows
+    // with the number of dishes, and a 13-dish main-course catalog in a single
+    // request ran past the 25 s limit; in parallel the wall clock is roughly
+    // one small call. Still all-or-nothing: any batch failing fails the lot,
+    // so nothing is cached and nothing is returned on a mixed scale.
+    const batches = [];
+    for (let i = 0; i < missing.length; i += DISHES_PER_BATCH) {
+      batches.push(missing.slice(i, i + DISHES_PER_BATCH));
+    }
+    const replies = await Promise.all(batches.map((batch) => callModel(batch, latitude, longitude)));
+    const fresh = {};
+    replies.forEach((reply, idx) => Object.assign(fresh, validate(reply.parsed, batches[idx])));
+    model = replies[0].model;
     for (const dish of missing) {
       cache.set(cacheKey(dish, latitude, longitude), { storedAt: Date.now(), result: fresh[dish.id] });
       results[dish.id] = { ...fresh[dish.id], cached: false };
