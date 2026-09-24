@@ -12,9 +12,7 @@
 // system prompt, so a lookup tool would only add a round trip, and live web
 // grounding would make the same search score differently on different days.
 
-const Anthropic = require('@anthropic-ai/sdk');
-
-const MODEL = 'claude-opus-5';
+const { MODEL, createWithFallbacks, parseStructuredReply, logUsage, AgentUnavailableError } = require('./llm');
 
 // kg CO2e per kg of food product, farm to retail: land use, farming, feed,
 // processing, transport, retail and packaging. Poore & Nemecek (2018), "Reducing
@@ -137,13 +135,6 @@ const MAX_INGREDIENT_GRAMS = 2000;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
   'August', 'September', 'October', 'November', 'December'];
 
-class AgentUnavailableError extends Error {
-  constructor(reason, message) {
-    super(message || reason);
-    this.reason = reason;
-  }
-}
-
 /* --------------------------------------------------------------- cache ---- */
 
 // A dish's breakdown depends on what it is and roughly where, not on who asked,
@@ -216,16 +207,7 @@ function validate(parsed, requested) {
 
 /* --------------------------------------------------------------- agent ---- */
 
-let client = null;
-function getClient() {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new AgentUnavailableError('no-key', 'ANTHROPIC_API_KEY is not set');
-  }
-  if (!client) client = new Anthropic({ maxRetries: 0 });
-  return client;
-}
-
-function buildRequest(dishes, latitude, longitude, withFallbacks) {
+function buildRequest(dishes, latitude, longitude) {
   const month = MONTHS[new Date().getMonth()];
   const location = Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude))
     ? `approximately ${Number(latitude).toFixed(1)}, ${Number(longitude).toFixed(1)}`
@@ -253,41 +235,17 @@ function buildRequest(dishes, latitude, longitude, withFallbacks) {
       effort: 'medium',
       format: { type: 'json_schema', schema: OUTPUT_SCHEMA }
     },
-    messages: [{ role: 'user', content: JSON.stringify(payload) }],
-    // Re-runs a declined request on Anthropic's recommended fallback model
-    // instead of returning a refusal. Food is unlikely to trip a classifier,
-    // but a declined call would otherwise surface as a failed estimate.
-    ...(withFallbacks ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {})
+    messages: [{ role: 'user', content: JSON.stringify(payload) }]
   };
 }
 
 async function callModel(dishes, latitude, longitude) {
-  const anthropic = getClient();
-  const options = { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 };
-
-  let response;
-  try {
-    response = await anthropic.beta.messages.create(buildRequest(dishes, latitude, longitude, true), options);
-  } catch (err) {
-    // If this account or request shape does not accept the fallback beta, a
-    // plain call is still better than no estimate.
-    if (err instanceof Anthropic.BadRequestError && /fallback/i.test(String(err.message))) {
-      console.warn('Carbon agent: fallbacks rejected, retrying without them —', err.message);
-      response = await anthropic.messages.create(buildRequest(dishes, latitude, longitude, false), options);
-    } else {
-      throw err;
-    }
-  }
-
-  if (response.stop_reason === 'refusal') throw new Error('the model declined the request');
-  if (response.stop_reason === 'max_tokens') throw new Error('the reply was cut off at max_tokens');
-
-  const text = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('');
-  const u = response.usage || {};
-  console.log(`carbon agent: ${dishes.length} dish${dishes.length === 1 ? '' : 'es'}, ` +
-    `${u.input_tokens || 0} in / ${u.output_tokens || 0} out, ` +
-    `${u.cache_read_input_tokens || 0} cached, served by ${response.model}`);
-  return { parsed: JSON.parse(text), model: response.model };
+  const response = await createWithFallbacks(
+    buildRequest(dishes, latitude, longitude),
+    { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
+  );
+  logUsage(`carbon agent: ${dishes.length} dish${dishes.length === 1 ? '' : 'es'}`, response);
+  return { parsed: parseStructuredReply(response, 'carbon'), model: response.model };
 }
 
 // dishes: [{ id, name, query?, servingGrams?, format? }]

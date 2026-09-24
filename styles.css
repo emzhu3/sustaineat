@@ -337,6 +337,166 @@ body {
   color: var(--text-dark);
 }
 
+/* -- "Search this area" ----------------------------------------------- */
+
+.search-area-btn {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 7px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background-color: #ffffff;
+  color: var(--text-dark);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+.search-area-btn:hover {
+  border-color: var(--primary-green);
+  color: var(--accent-green);
+}
+
+.map-searching {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.spinner-small {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  margin: 0;
+}
+
+/* The list fades while a new area loads, rather than blanking. */
+.restaurant-list.is-refreshing {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+/* -- restaurant menus ------------------------------------------------- */
+
+/* A row's button and its menu are siblings: a button cannot hold a button. */
+.restaurant-entry {
+  display: flex;
+  flex-direction: column;
+}
+
+.restaurant-entry .menu-panel {
+  margin: 0 0 4px 34px;
+}
+
+.menu-panel {
+  margin-top: 6px;
+}
+
+.menu-toggle {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-green);
+  cursor: pointer;
+}
+
+.menu-toggle:hover {
+  text-decoration: underline;
+}
+
+.menu-loading,
+.menu-unavailable {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-light);
+  line-height: 1.4;
+}
+
+.menu-unavailable {
+  display: block;
+}
+
+.menu-unavailable a,
+.menu-source a {
+  color: var(--accent-green);
+}
+
+.menu-items {
+  margin-top: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background-color: #ffffff;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.menu-section + .menu-section {
+  margin-top: 8px;
+}
+
+.menu-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-light);
+  margin-bottom: 3px;
+}
+
+.menu-item {
+  padding: 3px 0;
+}
+
+.menu-item-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.menu-item-name {
+  color: var(--text-dark);
+}
+
+.menu-item-price {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dark);
+  font-weight: 600;
+}
+
+.menu-item-desc {
+  font-size: 11.5px;
+  color: var(--text-light);
+  line-height: 1.35;
+}
+
+.menu-source {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
 /* -- how the CO2e figure was worked out --------------------------------- */
 
 /* Sits between the badge and the nutrition strip. The badge's own 20px bottom

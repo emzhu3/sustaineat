@@ -3,7 +3,9 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 const { PlacesCache } = require('./places-cache');
-const { estimateCarbon, AgentUnavailableError } = require('./carbon-agent');
+const { estimateCarbon } = require('./carbon-agent');
+const { lookupMenu } = require('./menu-agent');
+const { AgentUnavailableError } = require('./llm');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -445,7 +447,14 @@ function findDishEvidence(venue, dishTerms) {
 }
 
 app.post('/api/alternatives-nearby', async (req, res) => {
-  const { latitude, longitude, radiusMiles, queries } = req.body;
+  const { latitude, longitude, radiusMiles, queries, originLatitude, originLongitude } = req.body;
+
+  // "Search this area" searches around the map's centre but the person has
+  // not moved: distance and the trip's emissions are still measured from
+  // where they are. Omitted on the first search, where the two coincide.
+  const origin = typeof originLatitude === 'number' && typeof originLongitude === 'number'
+    ? { latitude: originLatitude, longitude: originLongitude }
+    : null;
 
   if (typeof latitude !== 'number' || typeof longitude !== 'number') {
     return res.status(400).json({ error: 'Latitude and longitude required' });
@@ -477,7 +486,10 @@ app.post('/api/alternatives-nearby', async (req, res) => {
       const scored = outcome.value.venues.map((venue) => {
         const evidence = findDishEvidence(venue, q.dishTerms);
         const { _reviews, ...rest } = venue; // never ship the raw reviews
-        return { ...rest, evidence };
+        const distance = origin
+          ? calculateDistance(origin.latitude, origin.longitude, venue.lat, venue.lng)
+          : venue.distance;
+        return { ...rest, distance, evidence };
       });
 
       // A place someone actually named the dish at beats a merely plausible
@@ -710,6 +722,31 @@ app.post('/api/carbon-estimate', async (req, res) => {
     }
     console.error('Carbon estimate failed:', err.message);
     res.json({ ok: false, reason: 'agent-failed', detail: err.message });
+  }
+});
+
+/* ---------------------------------------------------------------- menu ---- */
+
+// The restaurant's menu, read from its own website. Everything is a 200 with
+// a status; "unavailable" carries a reason and is a real answer about the
+// restaurant, so the UI can say why rather than just "something went wrong".
+app.post('/api/menu', async (req, res) => {
+  const { website, venueName } = req.body || {};
+  try {
+    const result = await lookupMenu({ website, venueName });
+    if (result.status === 'ok') {
+      console.log(`menu: ${venueName || website} — ${result.itemCount} items, ${result.withPrices} priced${result.cached ? ' (cached)' : ''}`);
+    } else {
+      console.log(`menu: ${venueName || website} — unavailable (${result.reason})${result.cached ? ' (cached)' : ''}`);
+    }
+    res.json(result);
+  } catch (err) {
+    if (err instanceof AgentUnavailableError) return res.json({ ok: false, reason: err.reason });
+    console.error('Menu lookup failed:', err.message);
+    // A model timeout means the page was read but the menu was too long to
+    // finish in time — worth telling apart from an unreachable site.
+    const reason = /timed out/i.test(String(err.message)) ? 'too-long' : 'agent-failed';
+    res.json({ ok: false, reason, detail: err.message });
   }
 });
 

@@ -94,6 +94,26 @@ call.
 Without the key, nothing breaks: every figure falls back to the built-in
 ingredient table and the badge says "Category estimate".
 
+### 6. Restaurant menus and "Search this area"
+
+**Menus.** Every venue row has a "View menu" toggle. On first open,
+`POST /api/menu` fetches the restaurant's own website (from the Places
+`websiteUri` field), follows its menu link — or tries `/menu` when the
+navigation is drawn by script — strips the page to visible text and asks
+Claude to list the items on it. Then `server/menu-agent.js` drops any item
+whose name is not actually in the fetched text, so the model can misread a
+menu but cannot invent one. Prices are optional: many restaurant sites do not
+show them, and the panel says so. Sites with PDF menus, JavaScript-only
+pages, or a `robots.txt` that asks not to be read come back as "menu not
+available" with the reason. Results are cached in memory for 7 days per
+website. Uses the same `ANTHROPIC_API_KEY` as the carbon estimate.
+
+**Search this area.** Dragging the map more than half a mile from the last
+search shows a "Search this area" button; searching is on request, not on
+every drag, because each search is up to eight billed Places calls. Venues
+are found around the map's centre, but distance and trip emissions are still
+measured from where you are.
+
 ### 4. Pexels key — done ✅
 
 Each alternative card shows a photo of the dish, searched on Pexels by food

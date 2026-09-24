@@ -308,6 +308,17 @@ function travelModeById(id) {
 // straight-line haversine the backend computes, so real road distance is
 // always higher — this figure understates the true cost rather than inflating
 // the saving.
+// Straight-line miles between two points, for "has the map moved enough to
+// be worth a new search". Same haversine the backend uses for venue distance.
+function milesBetween(a, b) {
+  const R = 3959;
+  const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+  const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos((a.latitude * Math.PI) / 180) * Math.cos((b.latitude * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
 function travelEmissions(distanceMiles, modeId) {
   return (Number(distanceMiles) || 0) * 2 * travelModeById(modeId).kgPerMile;
 }
@@ -978,7 +989,10 @@ async function fetchCarbonEstimate(dishes, latitude, longitude) {
 
 // One targeted Places search per alternative. An alternative is only offered
 // if something nearby actually sells that kind of food.
-async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternatives) {
+// `origin` is where the person actually is. It is sent when the search
+// centre is somewhere else — after "Search this area" — so distance and trip
+// emissions stay measured from them, not from wherever the map was dragged.
+async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternatives, origin) {
   const response = await fetch(`${BACKEND_URL}/api/alternatives-nearby`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -986,6 +1000,7 @@ async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternat
       latitude,
       longitude,
       radiusMiles,
+      ...(origin ? { originLatitude: origin.latitude, originLongitude: origin.longitude } : {}),
       queries: alternatives.map((alt) => ({
         key: String(alt.id),
         label: alt.name,
@@ -996,6 +1011,24 @@ async function fetchAlternativeVenues(latitude, longitude, radiusMiles, alternat
   });
   if (!response.ok) throw new Error(`Backend returned ${response.status}`);
   return response.json();
+}
+
+// Each suggestion has to earn its place by resolving to a real venue. Used by
+// the first search and by every "Search this area" after it.
+function attachVenues(suggested, payload) {
+  return suggested.map((alt) => {
+    const found = (payload.results || {})[String(alt.id)] || { source: "google", venues: [] };
+    const venues = found.venues || [];
+    return {
+      ...alt,
+      venues,
+      venue: venues[0] || null,
+      // Evidence belongs to the venue we actually surface.
+      evidence: (venues[0] || {}).evidence || null,
+      venueSource: found.source,
+      available: venues.length > 0
+    };
+  });
 }
 
 // The image bytes come through the backend, never straight from Google: the
@@ -1047,6 +1080,112 @@ function SustainabilityBadge({ carbon, category }) {
 // How the badge's number was arrived at, always stated. An ingredient-level
 // estimate shows its working — every line is grams × a published per-kg factor,
 // so a reader can check it; the category estimate says plainly that it is one.
+// The restaurant's menu, read from its own site the first time it is opened.
+// "Not available" is an answer about the restaurant with a reason attached —
+// a PDF menu, a site that will not load, no website on Google — never an
+// error state, and never a guessed list: the backend drops anything the page
+// does not actually say.
+const MENU_UNAVAILABLE_COPY = {
+  "no-website": "Google has no website listed for this restaurant.",
+  "pdf-menu": "Their menu is a PDF download, which can't be read here yet.",
+  "blocked-by-robots": "Their site asks not to be read automatically.",
+  "no-text": "Their site needs a browser to show its content, so nothing could be read.",
+  "not-a-menu": "Couldn't find a menu page on their site.",
+  "nothing-grounded": "Couldn't find a menu page on their site.",
+  "timeout": "Their site didn't respond in time.",
+  "unreachable": "Their site couldn't be reached.",
+  "too-long": "Their menu is too long to read in time.",
+  "no-key": "Menu lookup isn't set up on this server.",
+  "agent-failed": "Menu lookup didn't work this time."
+};
+
+function MenuPanel({ venue }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState({ status: "idle" });
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (!next || state.status !== "idle") return;
+    if (!venue.website) { setState({ status: "unavailable", reason: "no-website" }); return; }
+    setState({ status: "loading" });
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/menu`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ website: venue.website, venueName: venue.name })
+      });
+      const data = await response.json();
+      if (data.ok && data.status === "ok") setState({ status: "ok", items: data.items, fetchedUrl: data.fetchedUrl });
+      else setState({ status: "unavailable", reason: data.reason || "agent-failed", fetchedUrl: data.fetchedUrl });
+    } catch (err) {
+      setState({ status: "unavailable", reason: "unreachable" });
+    }
+  };
+
+  // Group by section, keeping the menu's own order.
+  const sections = [];
+  if (state.status === "ok") {
+    for (const item of state.items) {
+      const title = item.section || "";
+      let section = sections.find((sec) => sec.title === title);
+      if (!section) { section = { title, items: [] }; sections.push(section); }
+      section.items.push(item);
+    }
+  }
+
+  return (
+    <div className="menu-panel">
+      <button type="button" className="menu-toggle" onClick={toggle} aria-expanded={open}>
+        {open ? "Hide menu" : "View menu"}
+        {state.status === "ok" ? ` (${state.items.length} items)` : ""}
+      </button>
+
+      {open && state.status === "loading" && (
+        <div className="menu-loading"><span className="spinner spinner-small" /> Reading their menu…</div>
+      )}
+
+      {open && state.status === "unavailable" && (
+        <div className="menu-unavailable">
+          Menu not available — {MENU_UNAVAILABLE_COPY[state.reason] || MENU_UNAVAILABLE_COPY["agent-failed"]}
+          {venue.website && (
+            <React.Fragment>
+              {" "}
+              <a href={venue.website} target="_blank" rel="noopener noreferrer">Open their site ↗</a>
+            </React.Fragment>
+          )}
+        </div>
+      )}
+
+      {open && state.status === "ok" && (
+        <div className="menu-items">
+          {sections.map((section, si) => (
+            <div className="menu-section" key={`${section.title}-${si}`}>
+              {section.title && <div className="menu-section-title">{section.title}</div>}
+              {section.items.map((item, ii) => (
+                <div className="menu-item" key={`${item.name}-${ii}`}>
+                  <div className="menu-item-line">
+                    <span className="menu-item-name">{item.name}</span>
+                    {item.price != null && <span className="menu-item-price">${item.price.toFixed(2)}</span>}
+                  </div>
+                  {item.description && <div className="menu-item-desc">{item.description}</div>}
+                </div>
+              ))}
+            </div>
+          ))}
+          <div className="menu-source">
+            From{" "}
+            <a href={state.fetchedUrl || venue.website} target="_blank" rel="noopener noreferrer">
+              their website ↗
+            </a>
+            {state.items.every((item) => item.price == null) ? " · prices not listed there" : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CarbonBreakdown({ estimate }) {
   const [open, setOpen] = useState(false);
 
@@ -1166,7 +1305,7 @@ function buildInfoContent(group) {
   return wrap;
 }
 
-function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
+function GoogleMapView({ origin, groups, selectedKey, onSelect, onAreaMoved, canSearchArea, onSearchArea, searching }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
@@ -1177,7 +1316,11 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
 
   const groupsRef = useRef(groups);
   const onSelectRef = useRef(onSelect);
-  useEffect(() => { groupsRef.current = groups; onSelectRef.current = onSelect; });
+  const onAreaMovedRef = useRef(onAreaMoved);
+  // Set before fitBounds/panTo so the idle they cause is reported as ours,
+  // not as the person dragging the map somewhere new.
+  const programmaticRef = useRef(false);
+  useEffect(() => { groupsRef.current = groups; onSelectRef.current = onSelect; onAreaMovedRef.current = onAreaMoved; });
 
   // Map + "you are here", once.
   useEffect(() => {
@@ -1208,6 +1351,21 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
         strokeWeight: 3
       }
     });
+
+    // Where the map has settled, reported once it stops moving. Debounced so a
+    // drag reports its end, not every frame; "programmatic" marks the moves
+    // this component made itself.
+    let idleTimer = null;
+    map.addListener("idle", () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        const c = map.getCenter();
+        if (!c || !onAreaMovedRef.current) return;
+        const programmatic = programmaticRef.current;
+        programmaticRef.current = false;
+        onAreaMovedRef.current({ latitude: c.lat(), longitude: c.lng() }, programmatic);
+      }, 500);
+    });
   }, [origin.latitude, origin.longitude]);
 
   // One numbered marker per venue, matching the list beside the map.
@@ -1235,6 +1393,7 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
     });
 
     if (current.length) {
+      programmaticRef.current = true;
       map.fitBounds(bounds, 48);
       // Three venues a few hundred metres apart would otherwise zoom to
       // street level and lose all context.
@@ -1247,6 +1406,8 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
       state: "ready",
       markerCount: current.length,
       keys: current.map((g) => g.key),
+      // Stands in for a drag in tests: not flagged programmatic on purpose.
+      dragTo: (lat, lng) => map.panTo({ lat, lng }),
       click: (i) => {
         const marker = markersRef.current[current[i] && current[i].key];
         if (marker) google.maps.event.trigger(marker, "click");
@@ -1266,12 +1427,26 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect }) {
 
     info.setContent(buildInfoContent(group));
     info.open({ map, anchor: marker });
+    programmaticRef.current = true;
     map.panTo(marker.getPosition());
   }, [selectedKey, groupsSig]);
 
   return (
     <div className="mini-map is-google">
       <div ref={boxRef} className="google-map" />
+      {/* Appears once the map has been dragged somewhere new. Searching on
+          every drag would bill up to eight Places calls per nudge; this bills
+          only when asked. */}
+      {canSearchArea && !searching && (
+        <button type="button" className="search-area-btn" onClick={onSearchArea}>
+          Search this area
+        </button>
+      )}
+      {searching && (
+        <div className="map-searching" role="status">
+          <span className="spinner spinner-small" /> Searching this area…
+        </div>
+      )}
     </div>
   );
 }
@@ -1419,6 +1594,13 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   // pickup, and it is the only mode under which a swap can come out negative.
   const [travelMode, setTravelMode] = useState("drive");
   const [comparableOnly, setComparableOnly] = useState(true);
+  // "Search this area". The baseline is the centre of the last search; the
+  // button shows once the map has settled meaningfully away from it.
+  const [areaMoved, setAreaMoved] = useState(false);
+  const [areaSearching, setAreaSearching] = useState(false);
+  const areaBaselineRef = useRef(null);
+  const areaCenterRef = useRef(null);
+  const areaTokenRef = useRef(0);
   // Must sit above the loading early-return: hooks cannot be conditional.
   const mapsState = useGoogleMapsState();
 
@@ -1545,18 +1727,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
             filters.latitude, filters.longitude, filters.distance, suggested
           );
           restaurantNotice = payload.notice || null;
-          alternatives = suggested.map((alt) => {
-            const found = (payload.results || {})[String(alt.id)] || { source: "google", venues: [] };
-            return {
-              ...alt,
-              venues: found.venues || [],
-              venue: (found.venues || [])[0] || null,
-              // Evidence belongs to the venue we actually surface.
-              evidence: ((found.venues || [])[0] || {}).evidence || null,
-              venueSource: found.source,
-              available: (found.venues || []).length > 0
-            };
-          });
+          alternatives = attachVenues(suggested, payload);
         } catch (err) {
           // Name the URL that actually failed. The old wording told you to start
           // a backend that was already running, whenever the real fault was the
@@ -1630,6 +1801,49 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
   }
 
   const { original, alternatives, restaurantNotice, notes, pickup } = state;
+
+  const onAreaMoved = (center, programmatic) => {
+    areaCenterRef.current = center;
+    // A move this component made (fitting the pins, panning to a selection)
+    // sets the baseline rather than counting as the person going somewhere.
+    if (programmatic || !areaBaselineRef.current) {
+      areaBaselineRef.current = center;
+      setAreaMoved(false);
+      return;
+    }
+    setAreaMoved(milesBetween(areaBaselineRef.current, center) > 0.5);
+  };
+
+  const searchArea = async () => {
+    const center = areaCenterRef.current;
+    if (!center || areaSearching) return;
+    const token = ++areaTokenRef.current;
+    setAreaSearching(true);
+    try {
+      const payload = await fetchAlternativeVenues(
+        center.latitude, center.longitude, filters.distance, alternatives,
+        { latitude: filters.latitude, longitude: filters.longitude }
+      );
+      if (token !== areaTokenRef.current) return; // a newer search superseded this one
+      const refreshed = attachVenues(alternatives, payload)
+        .sort((a, b) => Number(b.available) - Number(a.available));
+      setState((prev) => ({ ...prev, alternatives: refreshed, restaurantNotice: payload.notice || null }));
+      // Keep the selection if it still resolves to somewhere; otherwise land
+      // on something orderable, as the first search does.
+      setSelectedMeal((prev) => {
+        const kept = prev && refreshed.find((alt) => alt.id === prev.id && alt.available);
+        return kept || refreshed.find((alt) => alt.available) || null;
+      });
+      areaBaselineRef.current = center;
+      setAreaMoved(false);
+    } catch (err) {
+      if (token === areaTokenRef.current) {
+        setState((prev) => ({ ...prev, restaurantNotice: `Couldn't search this area — ${err.message}.` }));
+      }
+    } finally {
+      if (token === areaTokenRef.current) setAreaSearching(false);
+    }
+  };
   const mode = travelModeById(travelMode);
 
   // The saving on the food, the emissions of going to collect it, and what is
@@ -1808,6 +2022,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                         the menu before setting out.
                       </div>
                     )}
+                    <MenuPanel venue={venue} />
                   </div>
 
                   {/* Same handoff the swap cards use: onCheckout -> CheckoutPage
@@ -2062,6 +2277,10 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                   const group = venueGroups.find((g) => g.key === key);
                   if (group) setSelectedMeal(group.alts[0]);
                 }}
+                onAreaMoved={onAreaMoved}
+                canSearchArea={areaMoved}
+                onSearchArea={searchArea}
+                searching={areaSearching}
               />
             ) : (
               <MiniMap
@@ -2074,10 +2293,10 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                 }}
               />
             )}
-            <div className="restaurant-list">
+            <div className={`restaurant-list ${areaSearching ? "is-refreshing" : ""}`}>
               {venueGroups.map((group, i) => (
+                <div className="restaurant-entry" key={group.key}>
                 <button
-                  key={group.key}
                   className={`restaurant-row ${selectedVenueKey === group.key ? "active" : ""}`}
                   onClick={() => setSelectedMeal(group.alts[0])}
                 >
@@ -2110,6 +2329,8 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
                     </div>
                   </div>
                 </button>
+                {!group.sample && <MenuPanel venue={group.venue} />}
+                </div>
               ))}
             </div>
           </div>
