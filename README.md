@@ -2,7 +2,7 @@
 
 SustainEat shows the carbon footprint of food choices in real time, compares nutrition information side by side, and rewards lower-impact choices with points. When a food is already low-carbon, the app surfaces real nearby restaurants where it can be ordered or picked up.
 
-Built for HackMIT.
+Built for HackMIT 2026.
 
 ## Features
 
@@ -53,4 +53,4 @@ Carbon footprint figures are category-level estimates based on a food's main ing
 
 ## Team
 
-Built by Emily Zhu, Jonathan Ramirez, Angel Jaramillo, and Leonardo Nunez for HackMIT 2026.
+Built by Emily Zhu, Jonathan Ramirez, Angel Jaramillo, and Leonardo Nunez.
