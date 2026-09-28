@@ -53,4 +53,4 @@ Carbon footprint figures are category-level estimates based on a food's main ing
 
 ## Team
 
-Built by [team members] for HackMIT.
+Built by Emily Zhu, Jonathan Ramirez, Angel Jaramillo, and Leonardo Nunez for HackMIT 2026.
