@@ -75,7 +75,7 @@ const PLANT_OVERRIDES = [
 ];
 
 // Ordered most specific first, and order is load-bearing:
-//   "cheesecake"    -> cheese, because cheese precedes pastry
+//   "cheesecake"    -> cheese, by substring ("cake" is word-bounded and does not match)
 //   "doughnut"      -> pastry, because pastry precedes nuts ("nut" is a substring)
 //   "peanut butter" -> nuts,   because nuts precedes dairy ("butter" is a substring)
 const INGREDIENT_RULES = [
@@ -126,7 +126,7 @@ function classifyIngredient(text) {
 // The chip is a human-facing label ONLY. The ingredient key above is unchanged
 // and still drives carbon and alternative matching — "cheesecake" is classified
 // as cheese because cream cheese is its dominant ingredient. This layer just
-// says that in words a judge will read correctly, instead of a bare "cheese".
+// says that in words a reader will recognise, instead of a bare "cheese".
 const INGREDIENT_LABEL_RULES = [
   { label: "cream cheese", match: ["cheesecake"] }
 ];
@@ -304,10 +304,6 @@ function travelModeById(id) {
   return TRAVEL_MODES.find((mode) => mode.id === id) || TRAVEL_MODES[0];
 }
 
-// Round trip, because you have to get home again. Venue distance is the
-// straight-line haversine the backend computes, so real road distance is
-// always higher — this figure understates the true cost rather than inflating
-// the saving.
 // Straight-line miles between two points, for "has the map moved enough to
 // be worth a new search". Same haversine the backend uses for venue distance.
 function milesBetween(a, b) {
@@ -319,6 +315,10 @@ function milesBetween(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
+// Round trip, because the trip home counts too. Venue distance is the
+// straight-line haversine the backend computes, so real road distance is
+// always higher — this figure understates the true cost rather than inflating
+// the saving.
 function travelEmissions(distanceMiles, modeId) {
   return (Number(distanceMiles) || 0) * 2 * travelModeById(modeId).kgPerMile;
 }
@@ -843,7 +843,7 @@ function applyOrder(rewards, { meal, original, restaurant, reward, earned, lowIm
     at: Date.now(),
     name: meal.name,
     // A low-impact order was not chosen over anything, so there is no name for
-    // the history row to put after "saved vs". Swap orders are unchanged.
+    // the history row to put after "saved vs".
     lowImpact: lowImpact === true,
     versus: lowImpact ? null : original.name,
     carbon: meal.carbon,
@@ -1077,9 +1077,6 @@ function SustainabilityBadge({ carbon, category }) {
   );
 }
 
-// How the badge's number was arrived at, always stated. An ingredient-level
-// estimate shows its working — every line is grams × a published per-kg factor,
-// so a reader can check it; the category estimate says plainly that it is one.
 // The restaurant's menu, read from its own site the first time it is opened.
 // "Not available" is an answer about the restaurant with a reason attached —
 // a PDF menu, a site that will not load, no website on Google — never an
@@ -1186,6 +1183,9 @@ function MenuPanel({ venue }) {
   );
 }
 
+// How the badge's number was arrived at, always stated. An ingredient-level
+// estimate shows its working — every line is grams × a published per-kg factor,
+// so a reader can check it; the category estimate says plainly that it is one.
 function CarbonBreakdown({ estimate }) {
   const [open, setOpen] = useState(false);
 
@@ -1248,8 +1248,6 @@ function NutritionGrid({ meal }) {
   );
 }
 
-// Projects real lat/lng onto a square panel, so pins keep their true bearing
-// and spacing without needing the (billable) Maps JavaScript API.
 // Tracks the Google Maps script. Starts from whatever index.html already
 // recorded, then follows it — including a failure that arrives after "ready".
 function useGoogleMapsState() {
@@ -1451,6 +1449,8 @@ function GoogleMapView({ origin, groups, selectedKey, onSelect, onAreaMoved, can
   );
 }
 
+// Projects real lat/lng onto a square panel, so pins keep their true bearing
+// and spacing without needing the (billable) Maps JavaScript API.
 function MiniMap({ origin, restaurants, selectedId, onSelect }) {
   const points = useMemo(() => {
     if (!restaurants.length) return [];
@@ -1729,9 +1729,8 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
           restaurantNotice = payload.notice || null;
           alternatives = attachVenues(suggested, payload);
         } catch (err) {
-          // Name the URL that actually failed. The old wording told you to start
-          // a backend that was already running, whenever the real fault was the
-          // page resolving the wrong origin for it.
+          // Name the URL that actually failed: the fault is as often the page
+          // resolving the wrong origin as it is a backend that is not running.
           restaurantNotice =
             `Could not reach the backend at ${BACKEND_URL} — ${err.message}. ` +
             "If it is not running, start it with `npm start` in the server folder.";
@@ -2242,8 +2241,7 @@ function ResultsPage({ filters, rewards, onBack, onCheckout }) {
       </section>
       )}
 
-      {/* The map panel is a separate section with its own condition and is
-          deliberately left exactly as it was. */}
+      {/* Map panel: only rendered once there are alternatives to place. */}
       {alternatives.length > 0 && (
       <section className="panel">
         <div className="panel-header">
@@ -2424,7 +2422,7 @@ function CheckoutPage({ order, rewards, onPlace, onDone, onBack, onOpenRewards }
   const { meal, original, restaurant, travel } = order;
   // Ordering a food that was already low-impact. Same page, same arithmetic --
   // but nothing was swapped, so every line phrased as a saving needs the other
-  // wording. The swap branches below are unchanged.
+  // wording.
   const lowImpact = order.lowImpact === true;
   const foodSaving = original.carbon - meal.carbon;
   const travelCost = travel ? travel.cost : 0;

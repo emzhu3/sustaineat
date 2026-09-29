@@ -1,46 +1,36 @@
-# cheesecake -> "cheese": trace result (2026-09-17)
+# Ingredient classification: the cheesecake case
 
-Traced against the LIVE served code in real Chrome with `setCacheEnabled(false)`.
-Reproduce: `node verification/trace-cheesecake.js`
+`node verification/trace-cheesecake.js` traces `classifyIngredient` rule by
+rule in real Chrome with the cache disabled. Cheesecake is the worked example
+because it exercises the substring-versus-word-boundary rule.
 
-## Not a cache problem
+## Mechanism
 
-Served `app.js` and disk `app.js` have identical MD5 `a0a9338424ccc7eceaaa3ee9c69291d9`.
-
-## classifyIngredient("cheesecake") -> "cheese"
-
-Rule-by-rule: misses tofu, lentils, beans, soy, vegetable (PLANT_OVERRIDES),
-then lamb, beef, shrimp, fish, pork, turkey, chicken -- then HITS `cheese`
-on the term `"cheese"`.
-
-Mechanism, from `termMatches` (app.js ~line 84):
+`termMatches` in `app.js`:
 
     if (term.length > 4 || /[\s-]/.test(term)) return value.includes(term);
     return new RegExp(`\b${term}(s|es)?\b`).test(value);
 
-- `"cheese".length === 6` -> takes the SUBSTRING branch
-- `"cheesecake".includes("cheese")` -> true
-- a word-boundary test would have returned FALSE
+Terms longer than four characters, or containing a space or hyphen, match as
+substrings so compounds like "cheesecake" still match "cheese". Shorter terms
+must land on a word boundary, because plain substring matching produces silent
+nonsense ("chocolate" contains "cola", "doughnut" contains "nut").
 
-## The comment at line 53 is incorrect
+`classifyIngredient("cheesecake")` misses every `PLANT_OVERRIDES` rule, then
+lamb, beef, shrimp, fish, pork, turkey and chicken, and hits `cheese` on the
+term `"cheese"` (6 characters → substring branch).
 
-    //   "cheesecake"    -> cheese, because cheese precedes pastry
+The `pastry` rule would not catch it. Its term is `"cake"` (4 characters →
+word-boundary branch), and `\bcake\b` does not match inside "cheesecake".
+Removing or reordering the `cheese` rule therefore does not hand cheesecake to
+`pastry`; it falls through to the default `"vegetable"` (0.5 kg CO2e), which is
+further from the truth than cheese. Do not remove `"cheese"` from the substring
+branch either: `cheeseburger → beef` depends on the current ordering.
 
-`pastry` would NOT catch cheesecake. Its term is `"cake"` (4 chars), which
-takes the word-boundary branch, and `\bcake\b` does not match inside
-"cheesecake". Verified live: `termMatches("cheesecake","cake") === false`.
+`classifyFormat("cheesecake")` is `dessert`, so its alternatives are desserts
+under a "Lower-carbon desserts" heading.
 
-Consequence: removing or reordering the `cheese` rule does NOT hand cheesecake
-to `pastry`. It falls through every rule to the default `return "vegetable"`
--> 0.5 kg CO2e, which is worse than the current 2.2 kg.
-
-## classifyFormat("cheesecake") -> "dessert"  (this part works)
-
-The dessert-format fix is applied and working. Alternatives are desserts:
-Vegan Cashew Cheesecake / Fresh Berry Sorbet / Oat Milk Soft Serve, under a
-"Lower-carbon desserts" header. See `screenshots/10-cheesecake-search.png`.
-
-Full category sweep (ingredient / format / carbon):
+## Expected classifications (ingredient / format / kg CO2e)
 
     cheesecake              cheese      dessert     2.2
     brownie                 chocolate   dessert     1.9
@@ -63,61 +53,35 @@ Full category sweep (ingredient / format / carbon):
     eggplant parmesan       vegetable   main        0.5
     egg salad               eggs        main        1.1
 
-Tricky overrides all hold: crab cake/pot pie -> main (not dessert),
-coffee cake -> dessert (not drink), eggplant -> vegetable (not eggs),
-doughnut -> pastry (not nuts), peanut butter -> nuts (not dairy).
+Overrides that must hold: crab cake and pot pie → main (not dessert), coffee
+cake → dessert (not drink), eggplant → vegetable (not eggs), doughnut → pastry
+(not nuts), peanut butter → nuts (not dairy).
 
-## If you want the ingredient label changed
+## Display labels
 
-Add an explicit rule BEFORE the `cheese` rule (line 64). Do not remove
-"cheese" from the substring branch -- `cheeseburger` -> beef depends on
-current ordering.
+Classification drives carbon and alternative matching and is not changed for
+presentation. A separate display layer decides what the chip reads:
 
-    { ingredient: "dairy", match: ["cheesecake"] },
-
----
-
-# UPDATE: chip label change applied (2026-09-17, later)
-
-Requested: keep the classification logic, change what the chip reads.
-Chosen: ingredient label + a second format chip.
+- `INGREDIENT_LABEL_RULES` + `ingredientLabelFor()` run after
+  `classifyIngredient`. One rule at present: cheesecake → "cream cheese".
+- `FORMAT_CHIP_LABELS` holds singular labels for the format chip;
+  `FORMAT_LABELS` stays plural for headings.
+- `searchUSDANutrition` and `estimateNutrition` both carry `ingredientLabel`,
+  and `ResultsPage` copies it onto `original`. That object is built by copying
+  named fields, so any new field must be added there too or the chip silently
+  falls back to the raw ingredient.
+- The chip row renders `ingredientLabel || ingredient` plus the format chip.
 
     Cheesecake  -> [USDA FoodData Central] [per 142g serving] [cream cheese] [dessert]
     Pizza       -> [USDA FoodData Central] [per 147g serving] [cheese]       [meal]
     Beef burger -> [USDA FoodData Central] [per 270g serving] [beef]         [meal]
 
-## What changed (6 edits, display only)
-
-1. `INGREDIENT_LABEL_RULES` + `ingredientLabelFor()` -- new display layer after
-   `classifyIngredient`. Currently one rule: cheesecake -> "cream cheese".
-2. `FORMAT_CHIP_LABELS` -- singular labels for the chip (FORMAT_LABELS stays
-   plural for the "Lower-carbon desserts" heading).
-3. `searchUSDANutrition` result carries `ingredientLabel`.
-4. `estimateNutrition` result carries `ingredientLabel`.
-5. `ResultsPage` copies `ingredientLabel` onto `original`. NOTE: this object is
-   built by copying named fields, so any new field must be added here too --
-   this was missed on the first pass and the chip silently fell back.
-6. Chip row renders `ingredientLabel || ingredient` plus the format chip.
-
-## Logic verified unchanged
-
-`classifyIngredient` and `getCarbonScore` return identical values before and
-after:
-
-    cheesecake  cheese     2.2      ice cream  dairy      1.8
-    pizza       cheese     2.2      apple pie  pastry     1.4
-    beef burger beef       8.5      ramen      vegetable  0.5
-    latte       dairy      1.8      pancakes   pastry     1.4
-
-Full regression re-run after the change: alt-grid 3 columns, map pins all
-inside bounds, checkout -> confirmation 7.7 kg, vegan filter clean, mobile
-375px has ZERO horizontal overflow (the 4th chip wraps), 0 page errors.
-
-Backup of the pre-change file: `verification/app.js.pre-chip-change.bak`
-Re-run this check: `node verification/verify-chips.js`
-
-## To add more label overrides
+To add a label override without touching classification:
 
     const INGREDIENT_LABEL_RULES = [
       { label: "cream cheese", match: ["cheesecake"] }
     ];
+
+`node verification/verify-chips.js` checks the chips and that
+`classifyIngredient` and `getCarbonScore` return the same values with the
+display layer in place.

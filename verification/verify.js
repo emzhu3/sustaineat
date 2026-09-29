@@ -136,7 +136,7 @@ async function textOf(page, sel) {
   });
   log('  alt-grid:', JSON.stringify(gridInfo));
 
-  // Map pins: the specific stacking risk flagged earlier. Real CSS now applies.
+  // Map pins: separation and bounds under real CSS (jsdom applies none).
   const pinInfo = await page.evaluate(() => {
     const map = document.querySelector('.mini-map');
     if (!map) return null;
